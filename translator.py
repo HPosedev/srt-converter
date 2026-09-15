@@ -51,7 +51,7 @@ from srt_utils import (
     write_srt_file,
 )
 
-DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_WINDOW_SIZE = 50
 
 #: Reintentos ante errores transitorios de la API.

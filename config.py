@@ -4,7 +4,7 @@ Esquema esperado (``config.toml``)::
 
     [gemini]
     api_key = "AIza..."   # o variable de entorno GEMINI_API_KEY
-    model = "gemini-3.6-flash"
+    model = "gemini-3.8-flash"
 
     [translation]
     source = "en"
@@ -33,7 +33,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_WINDOW_SIZE = 50
 
 
@@ -44,7 +44,7 @@ class GeminiConfig:
     api_key: str = ""
     """Clave de la API de Gemini (o ``GEMINI_API_KEY``)."""
     model: str = DEFAULT_GEMINI_MODEL
-    """Modelo generativo (p. ej. ``gemini-3.6-flash``)."""
+    """Modelo generativo (p. ej. ``gemini-3.8-flash``)."""
 
 
 @dataclass

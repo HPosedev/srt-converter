@@ -43,6 +43,7 @@ try:
         QMessageBox,
         QProgressBar,
         QPushButton,
+        QSizePolicy,
         QSpinBox,
         QTextEdit,
         QVBoxLayout,
@@ -320,10 +321,12 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("SubTrans – Traductor de subtítulos")
-        self.setMinimumSize(800, 600)
+        self.resize(850, 680)
+        self.setMinimumSize(780, 560)
         self._worker: Worker | None = None
         self._subtitle_tracks: list[SubtitleTrack] = []
         self._audio_tracks: list[AudioTrack] = []
+        self._loaded_path: Path | None = None
         self._build_ui()
 
     # -- construcción de la UI ----------------------------------------------
@@ -332,112 +335,136 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(14, 14, 14, 14)
 
         # --- Zona de arrastrar y soltar ---
         drop_group = QGroupBox("Archivo de origen")
         drop_layout = QVBoxLayout(drop_group)
-        self._drop_area = QLabel(
-            "Arrastra un archivo .mkv, .mp4 o .srt aquí\n"
-            "o haz clic en 'Examinar…'"
-        )
+        drop_layout.setSpacing(8)
+        drop_layout.setContentsMargins(10, 14, 10, 10)
+
+        self._drop_area = QLabel()
         self._drop_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._drop_area.setMinimumHeight(100)
-        self._drop_area.setStyleSheet(
-            "QLabel { border: 2px dashed #aaa; border-radius: 8px; "
-            "padding: 20px; color: #666; }"
-        )
+        self._drop_area.setMinimumHeight(115)
+        self._drop_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._drop_area.setCursor(Qt.CursorShape.PointingHandCursor)
         self._drop_area.setAcceptDrops(True)
         self._drop_area.installEventFilter(self)
+        self._update_drop_area_style("default")
         drop_layout.addWidget(self._drop_area)
 
         browse_row = QHBoxLayout()
+        browse_row.setSpacing(8)
         self._file_path = QLineEdit()
         self._file_path.setReadOnly(True)
         self._file_path.setPlaceholderText("Ningún archivo seleccionado")
-        browse_row.addWidget(self._file_path)
+        browse_row.addWidget(self._file_path, 1)
         browse_btn = QPushButton("Examinar…")
         browse_btn.clicked.connect(self._browse_file)
         browse_row.addWidget(browse_btn)
         drop_layout.addLayout(browse_row)
-        main_layout.addWidget(drop_group)
+        main_layout.addWidget(drop_group, 0)
 
-        # --- Selectores de pistas ---
-        tracks_group = QGroupBox("Pistas")
+        # --- Fila central de 2 columnas (Pistas/Modo y Ajustes) ---
+        mid_row = QHBoxLayout()
+        mid_row.setSpacing(10)
+
+        # Columna 1: Pistas y Modo
+        tracks_group = QGroupBox("Pistas y Modo")
         tracks_layout = QVBoxLayout(tracks_group)
+        tracks_layout.setSpacing(8)
+
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel("Modo:")
+        mode_lbl.setFixedWidth(65)
+        mode_row.addWidget(mode_lbl)
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItems(["Automático", "Solo extraer subtítulo", "Desde audio"])
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_row.addWidget(self._mode_combo, 1)
+        tracks_layout.addLayout(mode_row)
 
         sub_row = QHBoxLayout()
-        sub_row.addWidget(QLabel("Subtítulo:"))
+        sub_lbl = QLabel("Subtítulo:")
+        sub_lbl.setFixedWidth(65)
+        sub_row.addWidget(sub_lbl)
         self._subtitle_combo = QComboBox()
         self._subtitle_combo.currentIndexChanged.connect(self._on_subtitle_track_changed)
         sub_row.addWidget(self._subtitle_combo, 1)
         tracks_layout.addLayout(sub_row)
 
         audio_row = QHBoxLayout()
-        audio_row.addWidget(QLabel("Audio:"))
+        audio_lbl = QLabel("Audio:")
+        audio_lbl.setFixedWidth(65)
+        audio_row.addWidget(audio_lbl)
         self._audio_combo = QComboBox()
         self._audio_combo.currentIndexChanged.connect(self._on_audio_track_changed)
         audio_row.addWidget(self._audio_combo, 1)
         tracks_layout.addLayout(audio_row)
-        main_layout.addWidget(tracks_group)
 
-        # --- Selector de modo ---
-        mode_group = QGroupBox("Modo de operación")
-        mode_layout = QHBoxLayout(mode_group)
-        self._mode_combo = QComboBox()
-        self._mode_combo.addItems(["Automático", "Solo extraer subtítulo", "Desde audio"])
-        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        mode_layout.addWidget(QLabel("Modo:"))
-        mode_layout.addWidget(self._mode_combo, 1)
-        main_layout.addWidget(mode_group)
+        mid_row.addWidget(tracks_group, 1)
 
-        # --- Ajustes ---
-        settings_group = QGroupBox("Ajustes")
+        # Columna 2: Ajustes de traducción
+        settings_group = QGroupBox("Ajustes de traducción")
         settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(8)
 
         lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Idioma destino:"))
+        lang_lbl = QLabel("Idioma destino:")
+        lang_lbl.setFixedWidth(130)
+        lang_row.addWidget(lang_lbl)
         self._dst_lang = QLineEdit("es")
-        self._dst_lang.setMaximumWidth(100)
+        self._dst_lang.setMaximumWidth(80)
         lang_row.addWidget(self._dst_lang)
         lang_row.addStretch()
         settings_layout.addLayout(lang_row)
 
-        window_row = QHBoxLayout()
-        window_row.addWidget(QLabel("Ventana de contexto:"))
+        win_row = QHBoxLayout()
+        win_lbl = QLabel("Ventana de contexto:")
+        win_lbl.setFixedWidth(130)
+        win_row.addWidget(win_lbl)
         self._window_size = QSpinBox()
         self._window_size.setRange(1, 200)
         self._window_size.setValue(50)
-        self._window_size.setMaximumWidth(100)
-        window_row.addWidget(self._window_size)
-        window_row.addStretch()
-        settings_layout.addLayout(window_row)
+        self._window_size.setMaximumWidth(80)
+        win_row.addWidget(self._window_size)
+        win_row.addStretch()
+        settings_layout.addLayout(win_row)
 
+        cache_row = QHBoxLayout()
         self._keep_cache = QCheckBox("Mantener caché de traducción")
         self._keep_cache.setChecked(True)
-        settings_layout.addWidget(self._keep_cache)
-        main_layout.addWidget(settings_group)
+        cache_row.addWidget(self._keep_cache)
+        settings_layout.addLayout(cache_row)
+
+        mid_row.addWidget(settings_group, 1)
+
+        main_layout.addLayout(mid_row, 0)
 
         # --- Barra de progreso y estado ---
         progress_group = QGroupBox("Progreso")
         progress_layout = QVBoxLayout(progress_group)
+        progress_layout.setSpacing(4)
         self._progress_bar = QProgressBar()
         self._progress_bar.setValue(0)
         progress_layout.addWidget(self._progress_bar)
         self._status_label = QLabel("Listo")
         progress_layout.addWidget(self._status_label)
-        main_layout.addWidget(progress_group)
+        main_layout.addWidget(progress_group, 0)
 
         # --- Visor de registro ---
         log_group = QGroupBox("Registro")
         log_layout = QVBoxLayout(log_group)
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
-        self._log_view.setMaximumHeight(150)
+        self._log_view.setMinimumHeight(80)
         log_layout.addWidget(self._log_view)
-        main_layout.addWidget(log_group)
+        main_layout.addWidget(log_group, 1)
 
         # --- Botones ---
         buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(10)
         self._start_btn = QPushButton("Iniciar traducción")
         self._start_btn.setEnabled(False)
         self._start_btn.clicked.connect(self._start)
@@ -447,25 +474,62 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.clicked.connect(self._cancel)
         buttons_row.addWidget(self._cancel_btn)
-        main_layout.addLayout(buttons_row)
+        main_layout.addLayout(buttons_row, 0)
 
         self._log("SubTrans GUI iniciado. Arrastra un archivo o haz clic en Examinar.")
 
     # -- event filter para drag & drop --------------------------------------
 
+    def _update_drop_area_style(self, state: str) -> None:
+        """Actualiza el aspecto y texto de la zona de arrastre."""
+        if state == "hover":
+            self._drop_area.setText(
+                "<p style='margin:0; font-size: 14px; font-weight: bold;'>📥 Suelta el archivo aquí</p>"
+                "<p style='margin:4px 0 0 0; color: #60a5fa; font-size: 11px;'>Formatos soportados: .mkv, .mp4, .srt</p>"
+            )
+            self._drop_area.setStyleSheet(
+                "QLabel { border: 2px dashed #3b82f6; border-radius: 8px; "
+                "background-color: rgba(59, 130, 246, 0.08); padding: 14px; color: #60a5fa; }"
+            )
+        elif state == "loaded" and self._loaded_path:
+            self._drop_area.setText(
+                f"<p style='margin:0; font-size: 14px; font-weight: bold;'>🎬 {self._loaded_path.name}</p>"
+                "<p style='margin:4px 0 0 0; color: #10b981; font-size: 11px;'>✓ Archivo cargado correctamente · Haz clic o arrastra otro para cambiarlo</p>"
+            )
+            self._drop_area.setStyleSheet(
+                "QLabel { border: 2px solid #10b981; border-radius: 8px; "
+                "background-color: rgba(16, 185, 129, 0.08); padding: 14px; color: #34d399; }"
+            )
+        else:
+            self._drop_area.setText(
+                "<p style='margin:0; font-size: 14px; font-weight: bold;'>📂 Arrastra un archivo .mkv, .mp4 o .srt aquí</p>"
+                "<p style='margin:4px 0 0 0; color: #888; font-size: 11px;'>o haz clic en esta zona para examinar en tu equipo</p>"
+            )
+            self._drop_area.setStyleSheet(
+                "QLabel { border: 2px dashed #4a5568; border-radius: 8px; "
+                "background-color: rgba(255, 255, 255, 0.02); padding: 14px; color: #cbd5e1; }"
+                "QLabel:hover { border-color: #3b82f6; background-color: rgba(59, 130, 246, 0.05); }"
+            )
+
     def eventFilter(self, obj: Any, event: Any) -> bool:
         if obj is not self._drop_area:
             return super().eventFilter(obj, event)
-        if event.type() == QEvent.Type.DragEnter:
+        event_type = event.type()
+        if event_type == QEvent.Type.DragEnter:
             mime = event.mimeData()
             if mime.hasUrls():
                 for url in mime.urls():
                     path = Path(url.toLocalFile())
                     if path.suffix.lower() in SUPPORTED_VIDEO_EXTS | SUPPORTED_SRT_EXTS:
                         event.acceptProposedAction()
+                        self._update_drop_area_style("hover")
                         return True
             return False
-        if event.type() == QEvent.Type.Drop:
+        drag_leave = getattr(QEvent.Type, "DragLeave", None)
+        if drag_leave is not None and event_type == drag_leave:
+            self._update_drop_area_style("loaded" if self._loaded_path else "default")
+            return True
+        if event_type == QEvent.Type.Drop:
             mime = event.mimeData()
             if mime.hasUrls() and mime.urls():
                 path = Path(mime.urls()[0].toLocalFile())
@@ -473,7 +537,13 @@ class MainWindow(QMainWindow):
                     self._load_file(path)
                     event.acceptProposedAction()
                     return True
+            self._update_drop_area_style("loaded" if self._loaded_path else "default")
             return False
+        mouse_press = getattr(QEvent.Type, "MouseButtonPress", None)
+        if mouse_press is not None and event_type == mouse_press:
+            if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
+                self._browse_file()
+                return True
         return super().eventFilter(obj, event)
 
     # -- slots --------------------------------------------------------------
@@ -491,12 +561,9 @@ class MainWindow(QMainWindow):
         if not path.is_file():
             self._log(f"Error: no existe el archivo {path}")
             return
+        self._loaded_path = path
         self._file_path.setText(str(path))
-        self._drop_area.setText(path.name)
-        self._drop_area.setStyleSheet(
-            "QLabel { border: 2px solid #4CAF50; border-radius: 8px; "
-            "padding: 20px; color: #4CAF50; font-weight: bold; }"
-        )
+        self._update_drop_area_style("loaded")
         self._log(f"Archivo cargado: {path.name}")
 
         suffix = path.suffix.lower()

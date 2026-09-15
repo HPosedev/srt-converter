@@ -10,7 +10,7 @@ from config import DEFAULT_GEMINI_MODEL, load_config
 FULL_TOML = """\
 [gemini]
 api_key = "AIza-test"
-model = "gemini-3.6-flash"
+model = "gemini-3.8-flash"
 
 [languages]
 src = "en"
@@ -32,7 +32,7 @@ def test_load_full_toml(tmp_path: Path) -> None:
     cfg_file.write_text(FULL_TOML, encoding="utf-8")
     cfg = load_config(cfg_file)
     assert cfg.gemini.api_key == "AIza-test"
-    assert cfg.gemini.model == "gemini-3.6-flash"
+    assert cfg.gemini.model == "gemini-3.8-flash"
     assert (cfg.src_lang, cfg.dst_lang) == ("en", "es")
     assert (cfg.max_chars, cfg.max_cps, cfg.window_size) == (40, 20.0, 100)
     assert cfg.glossary == {"Winterfell": "Invernalia"}

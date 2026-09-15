@@ -5,7 +5,7 @@
 
 [gemini]
 api_key = ""  # Tu Gemini API key (o exporta GEMINI_API_KEY)
-model = "gemini-3.6-flash"
+model = "gemini-3.8-flash"
 
 [translation]
 source = "en"

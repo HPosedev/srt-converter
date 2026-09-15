@@ -74,7 +74,7 @@ Edita `config.toml`:
 ```toml
 [gemini]
 api_key = "AIzaSy..."               # Tu API key de Gemini
-model = "gemini-3.6-flash"         # Modelo a utilizar
+model = "gemini-3.8-flash"         # Modelo a utilizar
 
 [translation]
 source = "en"

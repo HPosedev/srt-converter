@@ -54,7 +54,7 @@ if not HAS_PYSIDE6:
         "QDragEnterEvent", "QDropEvent", "QApplication", "QCheckBox",
         "QComboBox", "QDoubleSpinBox", "QFileDialog", "QGroupBox",
         "QHBoxLayout", "QLabel", "QLineEdit", "QMainWindow",
-        "QMessageBox", "QProgressBar", "QPushButton", "QSpinBox",
+        "QMessageBox", "QProgressBar", "QPushButton", "QSizePolicy", "QSpinBox",
         "QTextEdit", "QVBoxLayout", "QWidget",
     ):
         setattr(mock_qt, name, type(name, (), {"__init__": lambda s, **kw: None}))
@@ -243,7 +243,7 @@ class TestWorkerFromAudioSuccess:
             patch("gui.write_srt_file", return_value=tmp_path / "test_es.srt"),
         ):
             mock_cfg.return_value.gemini.api_key = "fake-key"
-            mock_cfg.return_value.gemini.model = "gemini-3.6-flash"
+            mock_cfg.return_value.gemini.model = "gemini-3.8-flash"
             mock_cfg.return_value.glossary = {}
             mock_cfg.return_value.src_lang = "en"
             mock_cfg.return_value.dst_lang = "es"
@@ -285,7 +285,7 @@ class TestWorkerAutoSuccess:
             patch("gui.GeminiSubtitler", return_value=mock_subtitler),
         ):
             mock_cfg.return_value.gemini.api_key = "fake-key"
-            mock_cfg.return_value.gemini.model = "gemini-3.6-flash"
+            mock_cfg.return_value.gemini.model = "gemini-3.8-flash"
             mock_cfg.return_value.glossary = {}
             mock_cfg.return_value.src_lang = "en"
             mock_cfg.return_value.dst_lang = "es"
@@ -322,7 +322,7 @@ class TestWorkerTranslateSuccess:
             patch("gui.GeminiSubtitler", return_value=mock_subtitler),
         ):
             mock_cfg.return_value.gemini.api_key = "fake-key"
-            mock_cfg.return_value.gemini.model = "gemini-3.6-flash"
+            mock_cfg.return_value.gemini.model = "gemini-3.8-flash"
             mock_cfg.return_value.glossary = {}
             mock_cfg.return_value.src_lang = "en"
             mock_cfg.return_value.dst_lang = "es"
