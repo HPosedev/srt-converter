@@ -1,0 +1,31 @@
+[project]
+name = "subtitle-translator"
+version = "0.1.0"
+description = "Extrae subtítulos de MKV y los traduce EN->ES conservando timestamps"
+requires-python = ">=3.11"
+dependencies = [
+  "typer>=0.9",
+  "srt>=3.5",
+  "google-genai>=1.0",
+  "rich>=13.0",
+]
+readme = "README.md"
+
+[project.scripts]
+subtrans = "app:app"
+subtrans-gui = "gui:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+gui = ["PySide6>=6.5"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools]
+py-modules = ["app", "extractor", "translator", "srt_utils", "cache", "config", "gui"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

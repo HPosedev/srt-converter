@@ -1,0 +1,57 @@
+# ============================================
+# Secretos y credenciales (¡NUNCA versionar!)
+# ============================================
+config.toml
+*.local.toml
+config.local.toml
+secrets.toml
+.env
+.env.*
+*.pem
+*.key
+
+# ============================================
+# Temporales y cachés de subtitle-translator
+# ============================================
+*.subtrans-cache.json
+*.extracted.srt
+*.subtrans-tmp.mp3
+*.auto-audio.mp3
+
+# ============================================
+# Python / Entorno virtual
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# ============================================
+# Distribución y empaquetado
+# ============================================
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ============================================
+# Pruebas y cobertura
+# ============================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ============================================
+# Editores y Sistema Operativo
+# ============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

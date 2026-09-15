@@ -1,0 +1,22 @@
+# Plantilla de configuración para subtitle-translator.
+# Copia este archivo a 'config.toml' (en la raíz o en ~/.config/subtrans/config.toml)
+# y añade tu API key de Google Gemini.
+# Alternativa: deja api_key vacío y exporta la variable GEMINI_API_KEY.
+
+[gemini]
+api_key = ""  # Tu Gemini API key (o exporta GEMINI_API_KEY)
+model = "gemini-3.6-flash"
+
+[translation]
+source = "en"
+target = "es"
+window_size = 50
+style = "Español de España, tono natural y cinematográfico"
+
+[limits]
+max_chars = 42
+max_cps = 17
+
+[glossary]
+# Define términos o nombres propios con traducción fija:
+# "Winterfell" = "Invernalia"
