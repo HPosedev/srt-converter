@@ -210,6 +210,7 @@ subtrans gui
 - **Arrastra y suelta** cualquier archivo `.mkv`, `.mp4` o `.srt`.
 - Selecciona pistas de audio y subtítulos mediante menús desplegables.
 - Elige entre los modos: **Automático**, **Solo extraer** o **Desde audio** (o **Traducir SRT directo** al soltar un `.srt`).
+- Elige el **motor de traducción** en *Ajustes*: **Gemini (nube)** o **Local (Ollama)**. Se preselecciona el de `config.toml` y el motor local se arranca solo al traducir.
 - Monitorea el progreso con la barra porcentual y el visor de registros.
 
 ---

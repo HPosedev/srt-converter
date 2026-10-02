@@ -22,6 +22,7 @@ O desde la CLI::
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,7 @@ class Worker(QThread):
         window_size: int = 50,
         use_cache: bool = True,
         config_path: Path | None = None,
+        backend: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -110,6 +112,8 @@ class Worker(QThread):
         self.window_size = window_size
         self.use_cache = use_cache
         self.config_path = config_path
+        self.backend = backend
+        """Backend elegido en la GUI; ``None`` usa ``[translation].backend``."""
         self._cancelled = False
         self._subtitler: OllamaSubtitler | None = None
         """Traductor local en uso (para apagar su servidor al terminar)."""
@@ -141,6 +145,10 @@ class Worker(QThread):
 
     def _log(self, msg: str) -> None:
         self.text_log.emit(msg)
+
+    def _backend(self, cfg: AppConfig) -> str:
+        """Backend efectivo: el elegido en la GUI o, si no, el del TOML."""
+        return self.backend or cfg.backend
 
     def _update_progress(self, current: int, total: int) -> None:
         self.progress.emit(current, total)
@@ -246,7 +254,7 @@ class Worker(QThread):
         final = src.with_name(src.stem + "_es.srt")
         cfg = load_config(self.config_path)
         self._log(f"Cargando configuración…")
-        if cfg.backend == "ollama":
+        if self._backend(cfg) == "ollama":
             self.error.emit(
                 "El modo desde audio requiere backend = \"gemini\": "
                 "Ollama no transcribe audio."
@@ -306,7 +314,7 @@ class Worker(QThread):
     # -- helpers ------------------------------------------------------------
 
     def _build_subtitler(self, cfg: AppConfig) -> BaseSubtitler | None:
-        if cfg.backend == "ollama":
+        if self._backend(cfg) == "ollama":
             self._log(f"Backend local: Ollama ({cfg.ollama.model})")
             self._subtitler = OllamaSubtitler(
                 model=cfg.ollama.model,
@@ -327,7 +335,7 @@ class Worker(QThread):
         if not cfg.gemini.api_key:
             self.error.emit(
                 "Falta la API key de Gemini: define [gemini].api_key en config.toml "
-                "o la variable GEMINI_API_KEY."
+                "o la variable GEMINI_API_KEY, o elige el motor Local (Ollama)."
             )
             return None
         return GeminiSubtitler(
@@ -440,6 +448,25 @@ class MainWindow(QMainWindow):
         settings_group = QGroupBox("Ajustes de traducción")
         settings_layout = QVBoxLayout(settings_group)
         settings_layout.setSpacing(8)
+
+        backend_row = QHBoxLayout()
+        backend_lbl = QLabel("Motor:")
+        backend_lbl.setFixedWidth(130)
+        backend_row.addWidget(backend_lbl)
+        self._backend_combo = QComboBox()
+        self._backend_combo.addItem("Gemini (nube)", "gemini")
+        self._backend_combo.addItem("Local (Ollama)", "ollama")
+        self._backend_combo.setToolTip(
+            "Gemini: requiere API key y conexión.\n"
+            "Local: traduce en tu GPU con Ollama (se arranca solo); "
+            "no admite el modo 'Desde audio'."
+        )
+        self._backend_combo.setCurrentIndex(
+            max(0, self._backend_combo.findData(self._initial_backend()))
+        )
+        self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        backend_row.addWidget(self._backend_combo, 1)
+        settings_layout.addLayout(backend_row)
 
         lang_row = QHBoxLayout()
         lang_lbl = QLabel("Idioma destino:")
@@ -667,6 +694,26 @@ class MainWindow(QMainWindow):
             track = self._audio_tracks[index]
             self._log(f"Audio seleccionado: {track.describe()}")
 
+    @staticmethod
+    def _initial_backend() -> str:
+        """Backend de ``config.toml`` para preseleccionar el selector."""
+        try:
+            return load_config().backend
+        except (OSError, ValueError):
+            return "gemini"
+
+    @Slot(int)
+    def _on_backend_changed(self, index: int) -> None:
+        if self._backend_combo.currentData() == "ollama":
+            self._log("Motor: Local (Ollama). Se arrancará automáticamente al traducir.")
+            if shutil.which("ollama") is None:
+                self._log(
+                    "Aviso: no se encontró 'ollama' en el sistema. "
+                    "Instálalo (Arch: sudo pacman -S ollama-cuda) para usar el motor local."
+                )
+        else:
+            self._log("Motor: Gemini (nube).")
+
     @Slot(int)
     def _on_mode_changed(self, index: int) -> None:
         modes = ["auto", "extract", "from_audio"]
@@ -699,6 +746,16 @@ class MainWindow(QMainWindow):
         if self._audio_combo.currentIndex() >= 0 and self._audio_tracks:
             audio_idx = self._audio_combo.currentData()
 
+        backend = self._backend_combo.currentData()
+        if mode == "from_audio" and backend == "ollama":
+            QMessageBox.warning(
+                self,
+                "Modo no disponible",
+                "El modo 'Desde audio' necesita el motor Gemini.\n"
+                "Cambia el motor o elige otro modo.",
+            )
+            return
+
         self._worker = Worker(
             source,
             mode,
@@ -708,6 +765,7 @@ class MainWindow(QMainWindow):
             dst_lang=self._dst_lang.text() or "es",
             window_size=self._window_size.value(),
             use_cache=self._keep_cache.isChecked(),
+            backend=backend,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.text_log.connect(self._on_log)

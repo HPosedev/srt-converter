@@ -229,6 +229,43 @@ class TestWorkerRun:
         completed_mock.emit.assert_called_once()
         mock_subtitler.close.assert_called_once()  # libera el Ollama arrancado
 
+    def test_worker_backend_choice_overrides_config(self, tmp_path: Path) -> None:
+        """El motor elegido en la GUI prevalece sobre [translation].backend."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", backend="ollama")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.OllamaSubtitler") as mock_ollama,
+            patch("gui.GeminiSubtitler") as mock_gemini,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_cfg.return_value.backend = "gemini"
+            mock_ollama.return_value.fallback_notices = []
+            worker.run()
+        mock_ollama.assert_called_once()
+        mock_gemini.assert_not_called()
+
+    def test_worker_gemini_choice_ignores_ollama_config(self, tmp_path: Path) -> None:
+        """Elegir Gemini en la GUI no arranca Ollama aunque el TOML diga ollama."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", backend="gemini")
+        error_mock = MagicMock()
+        worker.error = error_mock
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.OllamaSubtitler") as mock_ollama,
+        ):
+            mock_cfg.return_value.backend = "ollama"
+            mock_cfg.return_value.gemini.api_key = ""
+            worker.run()
+        mock_ollama.assert_not_called()
+        assert "Local (Ollama)" in error_mock.emit.call_args[0][0]
+
     def test_worker_extract_success(self, tmp_path: Path) -> None:
         source = tmp_path / "test.mkv"
         source.write_text("fake")
