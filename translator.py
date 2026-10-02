@@ -61,6 +61,7 @@ from srt_utils import (
     parse_srt_content,
     read_srt_file,
     replace_contents,
+    wrap_lines,
     write_srt_file,
 )
 
@@ -77,8 +78,11 @@ RETRY_DELAYS = (2.0, 4.0, 8.0)
 _NUMBERED_BLOCK_RE = re.compile(r"\[#(\d+)\]")
 #: Separador de líneas con el que el prompt codifica los saltos internos
 #: (``"línea 1 / línea 2"``). Los modelos suelen copiarlo tal cual en vez
-#: de usar saltos reales, así que se decodifica al parsear.
-_LINE_SEPARATOR_RE = re.compile(r"[ \t]+/[ \t]+")
+#: de usar saltos reales, o lo combinan con un salto real (``"tú /⏎sabes"``),
+#: así que se decodifica al parsear en todas sus variantes.
+_LINE_SEPARATOR_RE = re.compile(
+    r"[ \t]*/[ \t]*\n[ \t]*|[ \t]*\n[ \t]*/[ \t]*|[ \t]+/[ \t]+"
+)
 
 
 class TranslationMismatchError(RuntimeError):
@@ -841,7 +845,8 @@ def translate_file(
         srt_path: SRT origen.
         output: Destino explícito o ``None`` para derivarlo.
         subtitler: Instancia configurada de :class:`BaseSubtitler`.
-        max_chars: Límite para la auditoría de longitud.
+        max_chars: Límite por línea: reparte las líneas largas en dos
+            (:func:`srt_utils.wrap_lines`) y audita la longitud.
         max_cps: Límite para la auditoría de velocidad.
         use_cache: Si ``False``, traduce todo sin leer ni escribir caché
             (útil para tests o para forzar una pasada limpia).
@@ -909,6 +914,9 @@ def translate_file(
             n for n in notices if n not in subtitler.fallback_notices
         )
     translated = [sub for window in translated_windows for sub in window]
+    translated = replace_contents(
+        translated, [wrap_lines(sub.content, max_chars) for sub in translated]
+    )
     warnings = audit_subtitles(translated, max_chars=max_chars, max_cps=max_cps)
     write_srt_file(dst, translated)
     if cache is not None and cache.is_complete(len(windows)):

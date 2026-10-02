@@ -145,3 +145,37 @@ def test_cps_zero_duration_with_text_warns() -> None:
         index=1, start=timedelta(seconds=2), end=timedelta(seconds=2), content="Hi"
     )
     assert any(w.kind == "cps" for w in audit_subtitles([sub]))
+
+
+def test_wrap_lines_leaves_short_text_untouched() -> None:
+    """Si todo cabe, el texto no cambia."""
+    from srt_utils import wrap_lines
+
+    assert wrap_lines("Corta.\nOtra corta.") == "Corta.\nOtra corta."
+
+
+def test_wrap_lines_splits_long_line_after_sentence_end() -> None:
+    """Una línea larga se parte en dos, preferiblemente tras el punto."""
+    from srt_utils import wrap_lines
+
+    text = "<i>Dos tipos salieron disparados. Me pusieron una bolsa en la cabeza.</i>"
+    assert wrap_lines(text) == (
+        "<i>Dos tipos salieron disparados.\nMe pusieron una bolsa en la cabeza.</i>"
+    )
+
+
+def test_wrap_lines_rebalances_two_lines_when_one_overflows() -> None:
+    """Dos líneas no-diálogo con una demasiado larga se reequilibran."""
+    from srt_utils import wrap_lines
+
+    out = wrap_lines("Podéis dirigir todo un imperio solo con nombres\nde pila y fechas")
+    assert out == "Podéis dirigir todo un imperio\nsolo con nombres de pila y fechas"
+    assert out.replace("\n", " ") == "Podéis dirigir todo un imperio solo con nombres de pila y fechas"
+
+
+def test_wrap_lines_keeps_dialogue_lines() -> None:
+    """En diálogos cada línea es un hablante: no se reparten."""
+    from srt_utils import wrap_lines
+
+    text = "- Una línea de diálogo demasiado larga para caber aquí.\n- Vale."
+    assert wrap_lines(text) == text

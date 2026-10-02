@@ -225,3 +225,13 @@ def test_server_dying_on_start_raises(
     sub = OllamaSubtitler(http=http)
     with pytest.raises(RuntimeError, match="terminó al arrancar"):
         sub.start_server()
+
+
+def test_dangling_slash_with_real_line_break_is_removed() -> None:
+    """'tú /⏎sabes' (separador + salto real) queda como salto limpio."""
+    subs = parse_srt_content(
+        "1\n00:00:01,000 --> 00:00:02,000\nWhat I'm saying is, you\nknow what I have to do.\n"
+    )
+    sub, _ = _subtitler(["[#1] Lo que digo es que tú /\nsabes lo que tengo que hacer."])
+    out = sub.translate_srt_text(subs)
+    assert out[0].content == "Lo que digo es que tú\nsabes lo que tengo que hacer."

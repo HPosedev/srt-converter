@@ -246,3 +246,16 @@ def test_missing_api_key_without_client_raises() -> None:
     """Sin api_key ni client → ValueError inmediato."""
     with pytest.raises(ValueError, match="api_key"):
         GeminiSubtitler(api_key="")
+
+
+def test_translate_file_wraps_long_lines(tmp_path: Path) -> None:
+    """La salida reparte en dos las líneas que superan max_chars."""
+    src = tmp_path / "input.srt"
+    src.write_text(SAMPLE, encoding="utf-8")
+    sub, _ = _subtitler(
+        ["[#1] Seraphina gestiona la contabilidad y las rutas. Kevin se encarga.\n[#2] Bien"]
+    )
+    dst, _ = translate_file(src, None, sub, use_cache=False)
+    out = parse_srt_content(dst.read_text(encoding="utf-8"))
+    assert out[0].content == "Seraphina gestiona la contabilidad\ny las rutas. Kevin se encarga."
+    assert all(len(line) <= 42 for line in out[0].content.split("\n"))
