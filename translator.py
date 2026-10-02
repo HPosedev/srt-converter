@@ -40,11 +40,16 @@ Resiliencia (Sprint 4):
 
 from __future__ import annotations
 
+import atexit
+import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import srt
@@ -587,6 +592,11 @@ class OllamaSubtitler(BaseSubtitler):
 
     Usa ``POST /api/chat`` sin streaming y con ``think`` desactivado. Solo
     traduce texto: la transcripción desde audio no está disponible.
+
+    Si el servidor es local y no responde, :meth:`start_server` lanza
+    ``ollama serve`` como proceso hijo; :meth:`close` (o la salida del
+    programa, vía ``atexit``) lo detiene y libera la VRAM. Un servidor que
+    ya estuviera arrancado (p. ej. el servicio de systemd) nunca se toca.
     """
 
     backend_name = "Ollama"
@@ -638,6 +648,97 @@ class OllamaSubtitler(BaseSubtitler):
         self.num_ctx = num_ctx
         self.temperature = temperature
         self.http = http if http is not None else httpx.Client(base_url=host, timeout=timeout)
+        self._server: subprocess.Popen | None = None
+        """Proceso ``ollama serve`` lanzado por nosotros (``None`` si no)."""
+
+    def server_running(self) -> bool:
+        """Indica si el servidor Ollama responde en :attr:`host`.
+
+        Returns:
+            ``True`` si ``GET /api/version`` contesta 200.
+        """
+        try:
+            return self.http.get("/api/version", timeout=2.0).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    def is_local(self) -> bool:
+        """Indica si :attr:`host` apunta a esta máquina.
+
+        Returns:
+            ``True`` para ``localhost``, ``127.0.0.1`` o ``::1``.
+        """
+        return urlparse(self.host).hostname in {"localhost", "127.0.0.1", "::1"}
+
+    def start_server(self, wait_seconds: float = 60.0) -> None:
+        """Lanza ``ollama serve`` y espera a que responda.
+
+        Args:
+            wait_seconds: Tiempo máximo de espera hasta que responda.
+
+        Raises:
+            ConnectionError: Si el host no es local (no se puede arrancar).
+            FileNotFoundError: Si el ejecutable ``ollama`` no está instalado.
+            RuntimeError: Si el proceso termina antes de estar listo.
+            TimeoutError: Si no responde en ``wait_seconds``.
+        """
+        if not self.is_local():
+            raise ConnectionError(
+                f"Ollama no responde en {self.host} y, al no ser local, "
+                "no se puede arrancar automáticamente."
+            )
+        exe = shutil.which("ollama")
+        if exe is None:
+            raise FileNotFoundError(
+                "No se encontró el programa 'ollama'. Instálalo "
+                "(Arch: sudo pacman -S ollama-cuda) o usa backend = \"gemini\"."
+            )
+        parsed = urlparse(self.host)
+        env = dict(os.environ, OLLAMA_HOST=f"{parsed.hostname}:{parsed.port or 11434}")
+        self._server = subprocess.Popen(
+            [exe, "serve"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # Ctrl+C lo gestionamos nosotros (close)
+        )
+        atexit.register(self.close)
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if self._server.poll() is not None:
+                self._server = None
+                raise RuntimeError(
+                    "'ollama serve' terminó al arrancar (¿puerto ocupado o "
+                    "instalación rota?). Prueba a ejecutarlo a mano para ver el error."
+                )
+            if self.server_running():
+                return
+            time.sleep(0.5)
+        self.close()
+        raise TimeoutError(f"Ollama no respondió en {wait_seconds:.0f} s.")
+
+    def ensure_server(self) -> bool:
+        """Arranca el servidor si no responde.
+
+        Returns:
+            ``True`` si lo ha arrancado ahora; ``False`` si ya funcionaba.
+        """
+        if self.server_running():
+            return False
+        self.start_server()
+        return True
+
+    def close(self) -> None:
+        """Detiene el ``ollama serve`` lanzado por nosotros (si lo hay)."""
+        server, self._server = self._server, None
+        if server is None or server.poll() is not None:
+            return
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
 
     def _call_model(self, contents: Any, temperature: float | None) -> str:
         """Llama a ``/api/chat`` una vez.

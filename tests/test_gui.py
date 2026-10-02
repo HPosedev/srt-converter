@@ -227,6 +227,7 @@ class TestWorkerRun:
             worker.run()
         assert mock_ollama.call_args.kwargs["model"] == "m:1b"
         completed_mock.emit.assert_called_once()
+        mock_subtitler.close.assert_called_once()  # libera el Ollama arrancado
 
     def test_worker_extract_success(self, tmp_path: Path) -> None:
         source = tmp_path / "test.mkv"

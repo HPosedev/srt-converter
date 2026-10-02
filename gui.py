@@ -111,6 +111,8 @@ class Worker(QThread):
         self.use_cache = use_cache
         self.config_path = config_path
         self._cancelled = False
+        self._subtitler: OllamaSubtitler | None = None
+        """Traductor local en uso (para apagar su servidor al terminar)."""
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -129,6 +131,11 @@ class Worker(QThread):
                 self.error.emit(f"Modo desconocido: {self.mode}")
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
+        finally:
+            # Apaga el Ollama que hayamos arrancado para liberar la VRAM.
+            if self._subtitler is not None:
+                self._subtitler.close()
+            self._subtitler = None
 
     # -- helpers ------------------------------------------------------------
 
@@ -301,7 +308,7 @@ class Worker(QThread):
     def _build_subtitler(self, cfg: AppConfig) -> BaseSubtitler | None:
         if cfg.backend == "ollama":
             self._log(f"Backend local: Ollama ({cfg.ollama.model})")
-            return OllamaSubtitler(
+            self._subtitler = OllamaSubtitler(
                 model=cfg.ollama.model,
                 host=cfg.ollama.host,
                 num_ctx=cfg.ollama.num_ctx,
@@ -312,6 +319,11 @@ class Worker(QThread):
                 window_size=self.window_size or cfg.window_size,
                 style_instructions=cfg.style_instructions,
             )
+            if not self._subtitler.server_running():
+                self._log("Arrancando Ollama…")
+                self._subtitler.start_server()
+                self._log("Ollama listo.")
+            return self._subtitler
         if not cfg.gemini.api_key:
             self.error.emit(
                 "Falta la API key de Gemini: define [gemini].api_key en config.toml "

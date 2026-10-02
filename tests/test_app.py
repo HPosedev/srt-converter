@@ -276,3 +276,20 @@ def test_report_warnings_keeps_bracketed_sound_tags(
     )
     app.report_warnings([warning])
     assert "[grita]" in capsys.readouterr().err
+
+
+def test_start_backend_reports_missing_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Si Ollama no se puede arrancar, la CLI sale con un mensaje claro."""
+    import typer
+
+    from translator import OllamaSubtitler
+
+    sub = OllamaSubtitler(http=object())
+    monkeypatch.setattr(sub, "server_running", lambda: False)
+
+    def no_binary() -> None:
+        raise FileNotFoundError("No se encontró el programa 'ollama'.")
+
+    monkeypatch.setattr(sub, "start_server", no_binary)
+    with pytest.raises(typer.Exit):
+        app.start_backend(sub)

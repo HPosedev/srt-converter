@@ -80,6 +80,28 @@ def build_subtitler(cfg: AppConfig, window_size: int | None = None) -> BaseSubti
     )
 
 
+def start_backend(subtitler: BaseSubtitler) -> None:
+    """Arranca Ollama si el backend es local y no está corriendo.
+
+    El servidor lanzado aquí se detiene solo al salir del programa
+    (``atexit`` en :meth:`OllamaSubtitler.start_server`).
+
+    Args:
+        subtitler: Traductor ya construido.
+
+    Raises:
+        typer.Exit: Si Ollama no se puede arrancar (mensaje en stderr).
+    """
+    if not isinstance(subtitler, OllamaSubtitler) or subtitler.server_running():
+        return
+    typer.echo("Arrancando Ollama…")
+    try:
+        subtitler.start_server()
+    except (OSError, RuntimeError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
 def report_warnings(warnings: list, where: str = "") -> None:
     """Muestra los avisos de auditoría por stderr, con tabla Rich.
 
@@ -326,6 +348,7 @@ def translate(
     """Traduce SRT a castellano con el backend configurado (caché y auditoría final)."""
     cfg = load_config(config)
     subtitler = build_subtitler(cfg, window_size=window_size)
+    start_backend(subtitler)
     chars = max_chars if max_chars is not None else cfg.max_chars
     cps = max_cps if max_cps is not None else cfg.max_cps
     use_cache = not no_cache
@@ -386,6 +409,7 @@ def auto(
             "--from-audio requiere backend = \"gemini\": Ollama no transcribe audio."
         )
     subtitler = build_subtitler(cfg, window_size=window_size)
+    start_backend(subtitler)
     chars = max_chars if max_chars is not None else cfg.max_chars
     cps = max_cps if max_cps is not None else cfg.max_cps
     use_cache = not no_cache

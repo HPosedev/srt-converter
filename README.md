@@ -118,9 +118,8 @@ Traduce sin depender de servicios externos usando un modelo local servido por [O
 ```bash
 # 1. Instalar Ollama (Arch: versión con CUDA para GPUs NVIDIA)
 sudo pacman -S ollama-cuda
-sudo systemctl enable --now ollama
 
-# 2. Descargar el modelo (~18 GB)
+# 2. Descargar el modelo una sola vez (~18 GB)
 ollama pull gemma4:26b-a4b
 ```
 
@@ -130,6 +129,8 @@ Y en `config.toml`:
 [translation]
 backend = "ollama"
 ```
+
+No hace falta arrancar nada a mano: si Ollama no está en marcha, `subtrans` (CLI o GUI) lanza `ollama serve` por su cuenta y lo detiene al terminar, liberando la VRAM. Si ya tenías Ollama corriendo (p. ej. como servicio), lo usa y no lo toca.
 
 - **Rendimiento orientativo** (RTX 4060 Laptop 8 GB + 62 GB RAM): ~40 tok/s, un episodio de ~1000 bloques en unos 8-9 minutos. El modelo se reparte entre GPU y RAM automáticamente.
 - **Calidad:** buena en registro y tacos, algo por debajo de Gemini en modismos; el `[glossary]` ayuda con términos recurrentes (p. ej. `"dog track" = "canódromo"`).
