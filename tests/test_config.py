@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from config import DEFAULT_GEMINI_MODEL, load_config
+from config import DEFAULT_GEMINI_MODEL, DEFAULT_OLLAMA_MODEL, load_config
 
 
 FULL_TOML = """\
@@ -105,3 +105,36 @@ def test_legacy_languages_fallback(tmp_path: Path) -> None:
     assert (cfg.src_lang, cfg.dst_lang) == ("en", "pt")
     assert cfg.window_size == 42
     assert cfg.style_instructions == ""
+
+
+def test_backend_defaults_to_gemini(tmp_path: Path) -> None:
+    """Sin [translation].backend se usa Gemini y Ollama queda por defecto."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[gemini]\napi_key = "k"\n', encoding="utf-8")
+    cfg = load_config(cfg_file)
+    assert cfg.backend == "gemini"
+    assert cfg.ollama.model == DEFAULT_OLLAMA_MODEL
+    assert cfg.ollama.num_ctx == 8192
+
+
+def test_ollama_backend_and_section(tmp_path: Path) -> None:
+    """backend = "ollama" y [ollama] se mapean a AppConfig."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        '[translation]\nbackend = "Ollama"\n\n'
+        '[ollama]\nhost = "http://gpu:11434"\nmodel = "m:1b"\n'
+        "num_ctx = 4096\ntemperature = 0.1\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.backend == "ollama"
+    assert (cfg.ollama.host, cfg.ollama.model) == ("http://gpu:11434", "m:1b")
+    assert (cfg.ollama.num_ctx, cfg.ollama.temperature) == (4096, 0.1)
+
+
+def test_unknown_backend_raises(tmp_path: Path) -> None:
+    """Un backend desconocido falla al cargar con la lista válida."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[translation]\nbackend = "deepl"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="gemini, ollama"):
+        load_config(cfg_file)

@@ -190,6 +190,44 @@ class TestWorkerRun:
         error_mock.emit.assert_called_once()
         assert "API key" in error_mock.emit.call_args[0][0]
 
+    def test_worker_from_audio_rejected_with_ollama(self, tmp_path: Path) -> None:
+        source = tmp_path / "test.mkv"
+        source.write_text("fake")
+        worker = Worker(source, "from_audio")
+        error_mock = MagicMock()
+        worker.error = error_mock
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.list_audio_tracks") as mock_tracks,
+        ):
+            mock_cfg.return_value.backend = "ollama"
+            worker.run()
+        mock_tracks.assert_not_called()
+        error_mock.emit.assert_called_once()
+        assert "gemini" in error_mock.emit.call_args[0][0]
+
+    def test_worker_translate_uses_ollama_without_api_key(self, tmp_path: Path) -> None:
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate")
+        completed_mock = MagicMock()
+        worker.completed = completed_mock
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        mock_subtitler = MagicMock()
+        mock_subtitler.fallback_notices = []
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.OllamaSubtitler", return_value=mock_subtitler) as mock_ollama,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_cfg.return_value.backend = "ollama"
+            mock_cfg.return_value.gemini.api_key = ""
+            mock_cfg.return_value.ollama.model = "m:1b"
+            worker.run()
+        assert mock_ollama.call_args.kwargs["model"] == "m:1b"
+        completed_mock.emit.assert_called_once()
+
     def test_worker_extract_success(self, tmp_path: Path) -> None:
         source = tmp_path / "test.mkv"
         source.write_text("fake")

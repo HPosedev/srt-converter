@@ -1,13 +1,21 @@
 # Plantilla de configuración para subtitle-translator.
 # Copia este archivo a 'config.toml' (en la raíz o en ~/.config/subtrans/config.toml)
-# y añade tu API key de Google Gemini.
+# y añade tu API key de Google Gemini (o usa backend = "ollama" para traducir en local).
 # Alternativa: deja api_key vacío y exporta la variable GEMINI_API_KEY.
 
 [gemini]
 api_key = ""  # Tu Gemini API key (o exporta GEMINI_API_KEY)
 model = "gemini-3.8-flash"
 
+# Traducción local con Ollama (solo si backend = "ollama"; no necesita API key).
+[ollama]
+host = "http://localhost:11434"
+model = "gemma4:26b-a4b"
+num_ctx = 8192
+temperature = 0.3
+
 [translation]
+backend = "gemini"  # "gemini" (API de Google) u "ollama" (modelo local)
 source = "en"
 target = "es"
 window_size = 50

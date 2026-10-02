@@ -235,3 +235,44 @@ def test_auto_no_tracks_suggests_from_audio(
     result = runner.invoke(app.app, ["auto", str(mkv)])
     assert result.exit_code != 0
     assert "--from-audio" in result.output
+
+
+def test_build_subtitler_ollama_needs_no_api_key() -> None:
+    """backend = "ollama" construye OllamaSubtitler sin API key."""
+    from config import AppConfig, OllamaConfig
+    from translator import OllamaSubtitler
+
+    cfg = AppConfig(backend="ollama", ollama=OllamaConfig(model="m:1b", num_ctx=4096))
+    sub = build_subtitler(cfg, window_size=20)
+    assert isinstance(sub, OllamaSubtitler)
+    assert (sub.model, sub.num_ctx, sub.window_size) == ("m:1b", 4096, 20)
+
+
+def test_auto_from_audio_rejected_with_ollama(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--from-audio con backend ollama falla antes de extraer nada."""
+    from config import AppConfig
+
+    monkeypatch.setattr(app, "load_config", lambda path=None: AppConfig(backend="ollama"))
+    monkeypatch.setattr(
+        app, "extract_audio", lambda *a, **k: pytest.fail("no debe extraer audio")
+    )
+    mkv = tmp_path / "v.mkv"
+    mkv.write_bytes(b"x")
+    result = runner.invoke(app.app, ["auto", str(mkv), "--from-audio"])
+    assert result.exit_code != 0
+    assert "gemini" in result.output
+
+
+def test_report_warnings_keeps_bracketed_sound_tags(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Las acotaciones [grita] no se pierden como markup de Rich."""
+    from types import SimpleNamespace
+
+    warning = SimpleNamespace(
+        index=16, kind="cps", value=24.3, limit=17.0, detail="-[grita] / -Guerra."
+    )
+    app.report_warnings([warning])
+    assert "[grita]" in capsys.readouterr().err

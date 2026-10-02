@@ -67,7 +67,7 @@ from extractor import (
     select_track,
 )
 from srt_utils import audit_subtitles, write_srt_file
-from translator import GeminiSubtitler, translate_file
+from translator import BaseSubtitler, GeminiSubtitler, OllamaSubtitler, translate_file
 
 SUPPORTED_VIDEO_EXTS = {".mkv", ".mp4"}
 SUPPORTED_SRT_EXTS = {".srt"}
@@ -239,6 +239,12 @@ class Worker(QThread):
         final = src.with_name(src.stem + "_es.srt")
         cfg = load_config(self.config_path)
         self._log(f"Cargando configuración…")
+        if cfg.backend == "ollama":
+            self.error.emit(
+                "El modo desde audio requiere backend = \"gemini\": "
+                "Ollama no transcribe audio."
+            )
+            return
         subtitler = self._build_subtitler(cfg)
         if not subtitler:
             return
@@ -292,7 +298,20 @@ class Worker(QThread):
 
     # -- helpers ------------------------------------------------------------
 
-    def _build_subtitler(self, cfg: AppConfig) -> GeminiSubtitler | None:
+    def _build_subtitler(self, cfg: AppConfig) -> BaseSubtitler | None:
+        if cfg.backend == "ollama":
+            self._log(f"Backend local: Ollama ({cfg.ollama.model})")
+            return OllamaSubtitler(
+                model=cfg.ollama.model,
+                host=cfg.ollama.host,
+                num_ctx=cfg.ollama.num_ctx,
+                temperature=cfg.ollama.temperature,
+                glossary=cfg.glossary,
+                src_lang=cfg.src_lang,
+                dst_lang=self.dst_lang or cfg.dst_lang,
+                window_size=self.window_size or cfg.window_size,
+                style_instructions=cfg.style_instructions,
+            )
         if not cfg.gemini.api_key:
             self.error.emit(
                 "Falta la API key de Gemini: define [gemini].api_key en config.toml "

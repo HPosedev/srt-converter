@@ -1,4 +1,4 @@
-"""Carga de configuración TOML (Gemini, idiomas, glosario, límites).
+"""Carga de configuración TOML (backend, idiomas, glosario, límites).
 
 Esquema esperado (``config.toml``)::
 
@@ -6,7 +6,14 @@ Esquema esperado (``config.toml``)::
     api_key = "AIza..."   # o variable de entorno GEMINI_API_KEY
     model = "gemini-3.8-flash"
 
+    [ollama]              # solo si backend = "ollama"
+    host = "http://localhost:11434"
+    model = "gemma4:26b-a4b"
+    num_ctx = 8192
+    temperature = 0.3
+
     [translation]
+    backend = "gemini"    # o "ollama" (local, sin API key)
     source = "en"
     target = "es"
     window_size = 50
@@ -34,7 +41,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b"
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_WINDOW_SIZE = 50
+BACKENDS = ("gemini", "ollama")
 
 
 @dataclass
@@ -48,10 +58,24 @@ class GeminiConfig:
 
 
 @dataclass
+class OllamaConfig:
+    """Servidor y modelo local de Ollama."""
+
+    host: str = DEFAULT_OLLAMA_HOST
+    model: str = DEFAULT_OLLAMA_MODEL
+    num_ctx: int = 8192
+    """Contexto en tokens (el defecto de Ollama, 4096, se queda corto)."""
+    temperature: float = 0.3
+
+
+@dataclass
 class AppConfig:
     """Configuración efectiva de la aplicación."""
 
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
+    ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    backend: str = "gemini"
+    """Backend de traducción: ``"gemini"`` u ``"ollama"``."""
     src_lang: str = "en"
     dst_lang: str = "es"
     glossary: dict[str, str] = field(default_factory=dict)
@@ -137,8 +161,12 @@ def _from_dict(data: dict) -> AppConfig:
 
     Returns:
         Configuración efectiva con fallbacks y entorno aplicado.
+
+    Raises:
+        ValueError: Si ``[translation].backend`` no es un backend conocido.
     """
     gemini_raw = data.get("gemini", {}) or {}
+    ollama_raw = data.get("ollama", {}) or {}
     translation_raw = data.get("translation", {}) or {}
     lang_raw = data.get("languages", {}) or {}
     limits_raw = data.get("limits", {}) or {}
@@ -149,6 +177,18 @@ def _from_dict(data: dict) -> AppConfig:
         api_key=str(gemini_raw.get("api_key", env_key) or env_key or ""),
         model=str(gemini_raw.get("model", DEFAULT_GEMINI_MODEL)),
     )
+    ollama = OllamaConfig(
+        host=str(ollama_raw.get("host", DEFAULT_OLLAMA_HOST)),
+        model=str(ollama_raw.get("model", DEFAULT_OLLAMA_MODEL)),
+        num_ctx=int(ollama_raw.get("num_ctx", 8192)),
+        temperature=float(ollama_raw.get("temperature", 0.3)),
+    )
+    backend = str(translation_raw.get("backend", "gemini")).strip().lower()
+    if backend not in BACKENDS:
+        raise ValueError(
+            f"Backend desconocido '{backend}' en [translation].backend; "
+            f"usa uno de: {', '.join(BACKENDS)}."
+        )
     glossary = {str(k): str(v) for k, v in dict(gloss_raw).items()}
     src = translation_raw.get("source", lang_raw.get("src", "en"))
     dst = translation_raw.get("target", lang_raw.get("dst", "es"))
@@ -157,6 +197,8 @@ def _from_dict(data: dict) -> AppConfig:
     )
     return AppConfig(
         gemini=gemini,
+        ollama=ollama,
+        backend=backend,
         src_lang=str(src),
         dst_lang=str(dst),
         glossary=glossary,

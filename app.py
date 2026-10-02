@@ -15,6 +15,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from config import AppConfig, load_config
@@ -32,24 +33,37 @@ from extractor import (
     select_track,
 )
 from srt_utils import audit_subtitles, write_srt_file
-from translator import GeminiSubtitler, translate_file
+from translator import BaseSubtitler, GeminiSubtitler, OllamaSubtitler, translate_file
 
-app = typer.Typer(help="Extrae y traduce subtítulos MKV/SRT (EN->ES con Gemini).")
+app = typer.Typer(help="Extrae y traduce subtítulos MKV/SRT (EN->ES con Gemini u Ollama local).")
 
 
-def build_subtitler(cfg: AppConfig, window_size: int | None = None) -> GeminiSubtitler:
-    """Construye el traductor desde la configuración efectiva.
+def build_subtitler(cfg: AppConfig, window_size: int | None = None) -> BaseSubtitler:
+    """Construye el traductor del backend configurado.
 
     Args:
         cfg: Configuración cargada del TOML/entorno.
         window_size: Override de la ventana (CLI); ``None`` usa la config.
 
     Returns:
-        Instancia lista de :class:`GeminiSubtitler`.
+        :class:`OllamaSubtitler` si ``backend = "ollama"``; si no,
+        :class:`GeminiSubtitler`.
 
     Raises:
-        typer.BadParameter: Si no hay API key de Gemini.
+        typer.BadParameter: Si el backend es Gemini y no hay API key.
     """
+    if cfg.backend == "ollama":
+        return OllamaSubtitler(
+            model=cfg.ollama.model,
+            host=cfg.ollama.host,
+            num_ctx=cfg.ollama.num_ctx,
+            temperature=cfg.ollama.temperature,
+            glossary=cfg.glossary,
+            src_lang=cfg.src_lang,
+            dst_lang=cfg.dst_lang,
+            window_size=window_size or cfg.window_size,
+            style_instructions=cfg.style_instructions,
+        )
     if not cfg.gemini.api_key:
         raise typer.BadParameter(
             "Falta la API key de Gemini: define [gemini].api_key en config.toml "
@@ -101,7 +115,8 @@ def report_warnings(warnings: list, where: str = "") -> None:
         else:
             measured = f"{int(value)} chars" if isinstance(value, (int, float)) else str(value)
             bound = f"{int(limit)} chars" if isinstance(limit, (int, float)) else str(limit)
-        detail = str(getattr(warning, "detail", ""))[:60]
+        # escape: las acotaciones "[grita]" se interpretarían como markup de Rich.
+        detail = escape(str(getattr(warning, "detail", ""))[:60])
         table.add_row(str(getattr(warning, "index", "?")), kind, measured, bound, detail)
     if len(warnings) > 25:
         table.add_row("…", f"+{len(warnings) - 25} más", "", "", "")
@@ -188,7 +203,7 @@ def cleanup_temps(*paths: Path) -> None:
 def run_translate_single(
     source: Path,
     output: Path | None,
-    subtitler: GeminiSubtitler,
+    subtitler: BaseSubtitler,
     max_chars: int,
     max_cps: float,
     use_cache: bool,
@@ -308,7 +323,7 @@ def translate(
     max_cps: float | None = typer.Option(None, "--max-cps", help="Límite chars/seg (auditoría)."),
     no_cache: bool = typer.Option(False, "--no-cache", help="No usar caché de reanudación."),
 ) -> None:
-    """Traduce SRT a castellano con Gemini (con caché y auditoría final)."""
+    """Traduce SRT a castellano con el backend configurado (caché y auditoría final)."""
     cfg = load_config(config)
     subtitler = build_subtitler(cfg, window_size=window_size)
     chars = max_chars if max_chars is not None else cfg.max_chars
@@ -347,7 +362,7 @@ def auto(
     output: Path | None = typer.Option(None, "--output", "-o", help="Destino *_es.srt (solo archivo único)."),
     lang: str | None = typer.Option(None, "--lang", help="Idioma de subtítulo (p. ej. eng)."),
     track: int | None = typer.Option(None, "--track", help="Índice s:N si hay varias."),
-    from_audio: bool = typer.Option(False, "--from-audio", help="Transcribir audio con Gemini."),
+    from_audio: bool = typer.Option(False, "--from-audio", help="Transcribir audio con Gemini (no con Ollama)."),
     audio_lang: str = typer.Option("eng", "--audio-lang", help="Idioma de audio con --from-audio."),
     audio_track: int | None = typer.Option(None, "--audio-track", help="Índice a:N de audio (prioridad máxima)."),
     keep_intermediate: bool = typer.Option(False, "--keep-intermediate", help="Conservar .srt/.mp3 intermedios."),
@@ -366,6 +381,10 @@ def auto(
     reanudación se conserva a propósito.
     """
     cfg = load_config(config)
+    if from_audio and cfg.backend == "ollama":
+        raise typer.BadParameter(
+            "--from-audio requiere backend = \"gemini\": Ollama no transcribe audio."
+        )
     subtitler = build_subtitler(cfg, window_size=window_size)
     chars = max_chars if max_chars is not None else cfg.max_chars
     cps = max_cps if max_cps is not None else cfg.max_cps
@@ -443,7 +462,7 @@ def run_auto_single(
     video: Path,
     final: Path,
     *,
-    subtitler: GeminiSubtitler,
+    subtitler: BaseSubtitler,
     lang: str | None,
     track: int | None,
     from_audio: bool,
