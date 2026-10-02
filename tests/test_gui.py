@@ -65,7 +65,13 @@ if not HAS_PYSIDE6:
 
 
 # Importar después del mockeo
+from config import AppConfig, GeminiConfig
 from gui import HAS_PYSIDE6 as gui_has_pyside6, Worker
+
+
+def _fake_config() -> AppConfig:
+    """Config aislada (Gemini con clave ficticia): no lee el config.toml real."""
+    return AppConfig(gemini=GeminiConfig(api_key="test-key"))
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +155,10 @@ class TestWorkerRun:
         worker = Worker(source, "auto")
         error_mock = MagicMock()
         worker.error = error_mock
-        with patch("gui.list_subtitle_tracks", return_value=[]):
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.list_subtitle_tracks", return_value=[]),
+        ):
             worker.run()
         error_mock.emit.assert_called_once()
         assert "pistas" in error_mock.emit.call_args[0][0].lower()
@@ -160,7 +169,10 @@ class TestWorkerRun:
         worker = Worker(source, "from_audio")
         error_mock = MagicMock()
         worker.error = error_mock
-        with patch("gui.list_audio_tracks", return_value=[]):
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.list_audio_tracks", return_value=[]),
+        ):
             worker.run()
         error_mock.emit.assert_called_once()
         assert "pistas" in error_mock.emit.call_args[0][0].lower()
