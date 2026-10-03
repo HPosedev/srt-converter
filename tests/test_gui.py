@@ -65,7 +65,13 @@ if not HAS_PYSIDE6:
 
 
 # Importar después del mockeo
+from config import AppConfig, GeminiConfig
 from gui import HAS_PYSIDE6 as gui_has_pyside6, Worker
+
+
+def _fake_config() -> AppConfig:
+    """Config aislada (Gemini con clave ficticia): no lee el config.toml real."""
+    return AppConfig(gemini=GeminiConfig(api_key="test-key"))
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +90,7 @@ class TestWorkerInit:
         assert worker.mode == "auto"
         assert worker.subtitle_track_index is None
         assert worker.audio_track_index is None
+        assert worker.src_lang is None
         assert worker.dst_lang == "es"
         assert worker.window_size == 50
         assert worker.use_cache is True
@@ -149,7 +156,10 @@ class TestWorkerRun:
         worker = Worker(source, "auto")
         error_mock = MagicMock()
         worker.error = error_mock
-        with patch("gui.list_subtitle_tracks", return_value=[]):
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.list_subtitle_tracks", return_value=[]),
+        ):
             worker.run()
         error_mock.emit.assert_called_once()
         assert "pistas" in error_mock.emit.call_args[0][0].lower()
@@ -160,7 +170,10 @@ class TestWorkerRun:
         worker = Worker(source, "from_audio")
         error_mock = MagicMock()
         worker.error = error_mock
-        with patch("gui.list_audio_tracks", return_value=[]):
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.list_audio_tracks", return_value=[]),
+        ):
             worker.run()
         error_mock.emit.assert_called_once()
         assert "pistas" in error_mock.emit.call_args[0][0].lower()
@@ -189,6 +202,118 @@ class TestWorkerRun:
             worker.run()
         error_mock.emit.assert_called_once()
         assert "API key" in error_mock.emit.call_args[0][0]
+
+    def test_worker_from_audio_rejected_with_ollama(self, tmp_path: Path) -> None:
+        source = tmp_path / "test.mkv"
+        source.write_text("fake")
+        worker = Worker(source, "from_audio")
+        error_mock = MagicMock()
+        worker.error = error_mock
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.list_audio_tracks") as mock_tracks,
+        ):
+            mock_cfg.return_value.backend = "ollama"
+            worker.run()
+        mock_tracks.assert_not_called()
+        error_mock.emit.assert_called_once()
+        assert "gemini" in error_mock.emit.call_args[0][0]
+
+    def test_worker_translate_uses_ollama_without_api_key(self, tmp_path: Path) -> None:
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate")
+        completed_mock = MagicMock()
+        worker.completed = completed_mock
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        mock_subtitler = MagicMock()
+        mock_subtitler.fallback_notices = []
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.OllamaSubtitler", return_value=mock_subtitler) as mock_ollama,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_cfg.return_value.backend = "ollama"
+            mock_cfg.return_value.gemini.api_key = ""
+            mock_cfg.return_value.ollama.model = "m:1b"
+            worker.run()
+        assert mock_ollama.call_args.kwargs["model"] == "m:1b"
+        completed_mock.emit.assert_called_once()
+        mock_subtitler.close.assert_called_once()  # libera el Ollama arrancado
+
+    def test_worker_backend_choice_overrides_config(self, tmp_path: Path) -> None:
+        """El motor elegido en la GUI prevalece sobre [translation].backend."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", backend="ollama")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.OllamaSubtitler") as mock_ollama,
+            patch("gui.GeminiSubtitler") as mock_gemini,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_cfg.return_value.backend = "gemini"
+            mock_ollama.return_value.fallback_notices = []
+            worker.run()
+        mock_ollama.assert_called_once()
+        mock_gemini.assert_not_called()
+
+    def test_worker_src_lang_overrides_config(self, tmp_path: Path) -> None:
+        """El idioma origen elegido en la GUI prevalece sobre [translation].source."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", src_lang="fr", backend="gemini")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.GeminiSubtitler") as mock_gemini,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_gemini.return_value.fallback_notices = []
+            worker.run()
+        assert mock_gemini.call_args.kwargs["src_lang"] == "fr"
+
+    def test_worker_without_src_lang_uses_config(self, tmp_path: Path) -> None:
+        """Sin idioma origen en la GUI se usa el de config.toml."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", backend="gemini")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        cfg = _fake_config()
+        cfg.src_lang = "de"
+        with (
+            patch("gui.load_config", return_value=cfg),
+            patch("gui.GeminiSubtitler") as mock_gemini,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_gemini.return_value.fallback_notices = []
+            worker.run()
+        assert mock_gemini.call_args.kwargs["src_lang"] == "de"
+
+    def test_worker_gemini_choice_ignores_ollama_config(self, tmp_path: Path) -> None:
+        """Elegir Gemini en la GUI no arranca Ollama aunque el TOML diga ollama."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", backend="gemini")
+        error_mock = MagicMock()
+        worker.error = error_mock
+        with (
+            patch("gui.load_config") as mock_cfg,
+            patch("gui.OllamaSubtitler") as mock_ollama,
+        ):
+            mock_cfg.return_value.backend = "ollama"
+            mock_cfg.return_value.gemini.api_key = ""
+            worker.run()
+        mock_ollama.assert_not_called()
+        assert "Local (Ollama)" in error_mock.emit.call_args[0][0]
 
     def test_worker_extract_success(self, tmp_path: Path) -> None:
         source = tmp_path / "test.mkv"
@@ -255,6 +380,38 @@ class TestWorkerFromAudioSuccess:
 
         completed_mock.emit.assert_called_once()
         assert str(tmp_path / "test_es.srt") in completed_mock.emit.call_args[0][0]
+
+
+    def test_from_audio_prefers_src_lang_track(self, tmp_path: Path) -> None:
+        """Sin pista ni idioma de audio, se busca el audio en el idioma origen."""
+        from extractor import AudioTrack
+
+        source = tmp_path / "test.mkv"
+        source.write_text("fake")
+        worker = Worker(source, "from_audio", src_lang="fr")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        tracks = [
+            AudioTrack(index=1, audio_index=0, lang="eng", title="", codec="aac",
+                       channels=2, is_default=True),
+            AudioTrack(index=2, audio_index=1, lang="fre", title="", codec="aac",
+                       channels=2),
+        ]
+        mock_subtitler = MagicMock()
+        mock_subtitler.transcribe_and_translate_audio.return_value = []
+        mock_subtitler.fallback_notices = []
+
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.list_audio_tracks", return_value=tracks),
+            patch("gui.extract_audio") as mock_extract,
+            patch("gui.GeminiSubtitler", return_value=mock_subtitler),
+            patch("gui.write_srt_file"),
+        ):
+            worker.run()
+
+        assert mock_extract.call_args.kwargs["track"].lang == "fre"
 
 
 class TestWorkerAutoSuccess:

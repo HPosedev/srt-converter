@@ -7,6 +7,8 @@ proyecto. Garantiza:
 - Parseo/reconstrucción con la librería ``srt`` preservando timestamps.
 - Auditoría de longitud **sin modificar el texto** (solo avisos):
   ~42 caracteres por línea y ~17 caracteres/segundo.
+- Reparto de líneas largas en dos líneas equilibradas (solo cambia saltos
+  de línea, nunca palabras).
 - Agrupación en ventanas consecutivas para traducción con contexto.
 - Reemplazo de contenidos preservando timestamps exactos.
 """
@@ -349,6 +351,58 @@ def chunk_subtitles(
     return [
         subtitles[i : i + window_size] for i in range(0, len(subtitles), window_size)
     ]
+
+
+#: Preferencia por cortar tras puntuación (caracteres de ventaja en la
+#: comparación de longitudes): fuerte tras fin de frase, suave tras pausa.
+_BREAK_BONUS = {".": 8, "?": 8, "!": 8, "…": 8, ",": 4, ";": 4, ":": 4}
+
+
+def wrap_lines(text: str, max_chars: int = DEFAULT_MAX_CHARS_PER_LINE) -> str:
+    """Reparte en dos líneas equilibradas un bloque con alguna línea larga.
+
+    Solo cambia dónde van los saltos de línea; las palabras no se tocan.
+
+    - Si todas las líneas caben en ``max_chars``, se devuelve igual.
+    - Los diálogos (dos líneas con alguna que empieza por ``-``) y los
+      bloques de más de dos líneas no se tocan: cada línea tiene sentido
+      propio.
+    - En el resto, el texto se une y se parte por el espacio que deja las
+      dos mitades más parejas, con preferencia por cortar tras un signo
+      de puntuación y por cortes en los que ambas líneas quepan. Nunca se
+      crean más de dos líneas, así que un
+      texto muy largo puede seguir superando el límite (la auditoría lo
+      avisará).
+
+    Args:
+        text: Contenido del bloque.
+        max_chars: Límite de caracteres por línea (def. 42).
+
+    Returns:
+        Texto con los saltos de línea ajustados (o el original).
+    """
+    lines = text.split("\n")
+    if all(len(line) <= max_chars for line in lines):
+        return text
+    if len(lines) > 2 or (
+        len(lines) == 2 and any(line.lstrip().startswith("-") for line in lines)
+    ):
+        return text
+    flat = " ".join(line.strip() for line in lines)
+    best: tuple[int, str, str] | None = None
+    for pos, char in enumerate(flat):
+        if char != " ":
+            continue
+        left, right = flat[:pos].rstrip(), flat[pos + 1 :].lstrip()
+        if not left or not right:
+            continue
+        longest = max(len(left), len(right))
+        score = longest - _BREAK_BONUS.get(left[-1], 0) + (100 if longest > max_chars else 0)
+        if best is None or score < best[0]:
+            best = (score, left, right)
+    if best is None:
+        return text
+    return f"{best[1]}\n{best[2]}"
 
 
 def replace_contents(

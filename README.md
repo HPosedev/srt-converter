@@ -1,6 +1,6 @@
 # 🎬 Subtitle Translator (`subtrans`)
 
-Herramienta completa en Python para extraer subtítulos y pistas de audio de vídeos (`.mkv`, `.mp4`), traducirlos con **Google Gemini AI** (`google-genai`) conservando los timestamps originales 1:1 y exportarlos como archivos SRT de alta calidad.
+Herramienta completa en Python para extraer subtítulos y pistas de audio de vídeos (`.mkv`, `.mp4`), traducirlos con **Google Gemini AI** (`google-genai`) o con un **modelo local vía Ollama** (sin API ni conexión) conservando los timestamps originales 1:1 y exportarlos como archivos SRT de alta calidad.
 
 Incluye interfaz de línea de comandos (**CLI**) moderna y una interfaz gráfica de escritorio (**GUI**) con PySide6.
 
@@ -16,8 +16,9 @@ Incluye interfaz de línea de comandos (**CLI**) moderna y una interfaz gráfica
   - Subdivisión recursiva de ventanas (*chunk halving*) si el modelo descuadra el conteo de bloques.
   - Conservación del texto original con aviso explícito si un bloque individual no logra traducirse tras agotar intentos.
 - 💾 **Caché de reanudación automática:** Guarda el progreso en `<archivo>.subtrans-cache.json`. Si el proceso se interrumpe (Ctrl+C, corte de red, etc.), la siguiente ejecución continúa exactamente donde se quedó. Al finalizar con éxito, la caché se limpia de forma automática.
+- 🏠 **Traducción local opcional:** Con `backend = "ollama"` traduce en tu propia GPU con un modelo local (por defecto `gemma4:26b-a4b`), sin API key, sin cuotas y sin errores de "alta demanda".
 - 🎙️ **Transcripción directa desde audio:** Si el vídeo no incluye pistas de subtítulos en texto, puede extraer el audio a MP3 (mono, 16 kHz) y usar la API de archivos de Gemini para transcribir y traducir directamente a SRT en un solo paso.
-- 🔍 **Auditoría de legibilidad:** Revisa estándares profesionales de subtitulado (~42 caracteres por línea y ~17 caracteres por segundo) mostrando advertencias claras con tablas Rich en la terminal sin alterar el texto.
+- 🔍 **Auditoría de legibilidad:** Revisa estándares profesionales de subtitulado (~42 caracteres por línea y ~17 caracteres por segundo) mostrando advertencias claras con tablas Rich en la terminal. Las líneas que superan el límite se reparten automáticamente en dos líneas equilibradas (cortando preferentemente tras la puntuación), sin cambiar ninguna palabra.
 - 📖 **Glosario y directrices de estilo:** Permite forzar traducciones fijas para nombres propios, lugares o terminología, así como definir el registro lingüístico (p. ej. *"Español de España, tono natural y cinematográfico"*).
 - 🖥️ **Interfaz Gráfica (GUI):** Soporte para arrastrar y soltar archivos, selección interactiva de pistas de subtítulos/audio, visualización de logs en tiempo real y barras de progreso.
 
@@ -32,7 +33,9 @@ Incluye interfaz de línea de comandos (**CLI**) moderna y una interfaz gráfica
    - **Fedora:** `sudo dnf install ffmpeg`
    - **macOS (Homebrew):** `brew install ffmpeg`
    - **Windows:** Instalar vía [ffmpeg.org](https://ffmpeg.org/download.html) o `winget install Gyan.FFmpeg`.
-3. **API Key de Google Gemini:** Consíguela gratis en [Google AI Studio](https://aistudio.google.com/).
+3. **Uno de los dos backends de traducción:**
+   - **Gemini:** API key gratuita en [Google AI Studio](https://aistudio.google.com/).
+   - **Ollama (local):** [Ollama](https://ollama.com/) instalado y un modelo descargado (ver [Traducción local con Ollama](#-traducción-local-con-ollama)).
 
 ---
 
@@ -76,7 +79,14 @@ Edita `config.toml`:
 api_key = "AIzaSy..."               # Tu API key de Gemini
 model = "gemini-3.8-flash"         # Modelo a utilizar
 
+[ollama]                           # Solo se usa con backend = "ollama"
+host = "http://localhost:11434"
+model = "gemma4:26b-a4b"
+num_ctx = 8192                     # Contexto en tokens
+temperature = 0.3
+
 [translation]
+backend = "gemini"                 # "gemini" o "ollama" (local, sin API key)
 source = "en"
 target = "es"
 window_size = 50                   # Bloques por petición (1 - 200)
@@ -100,6 +110,31 @@ Si prefieres no usar un archivo de configuración para la clave:
 ```bash
 export GEMINI_API_KEY="tu-api-key-de-gemini"
 ```
+
+### 🏠 Traducción local con Ollama
+
+Traduce sin depender de servicios externos usando un modelo local servido por [Ollama](https://ollama.com/). Usa el mismo protocolo de ventanas, validación 1:1, reintentos, caché y glosario que Gemini.
+
+```bash
+# 1. Instalar Ollama (Arch: versión con CUDA para GPUs NVIDIA)
+sudo pacman -S ollama-cuda
+
+# 2. Descargar el modelo una sola vez (~18 GB)
+ollama pull gemma4:26b-a4b
+```
+
+Y en `config.toml`:
+
+```toml
+[translation]
+backend = "ollama"
+```
+
+No hace falta arrancar nada a mano: si Ollama no está en marcha, `subtrans` (CLI o GUI) lanza `ollama serve` por su cuenta y lo detiene al terminar, liberando la VRAM. Si ya tenías Ollama corriendo (p. ej. como servicio), lo usa y no lo toca.
+
+- **Rendimiento orientativo** (RTX 4060 Laptop 8 GB + 62 GB RAM): ~40 tok/s, un episodio de ~1000 bloques en unos 8-9 minutos. El modelo se reparte entre GPU y RAM automáticamente.
+- **Calidad:** buena en registro y tacos, algo por debajo de Gemini en modismos; el `[glossary]` ayuda con términos recurrentes (p. ej. `"dog track" = "canódromo"`).
+- **Limitación:** el modo `--from-audio` solo funciona con Gemini.
 
 ---
 
@@ -144,13 +179,13 @@ subtrans translate archivo.srt --window-size 30 --no-cache
 
 ### 3. `subtrans auto` — Flujo integral MKV/MP4 → `*_es.srt`
 
-Procesa el vídeo completo: extrae la pista de subtítulo adecuada, la traduce con Gemini y limpia los archivos intermedios.
+Procesa el vídeo completo: extrae la pista de subtítulo adecuada, la traduce con el backend configurado y limpia los archivos intermedios.
 
 ```bash
 # Modo estándar: busca pista de subtítulos, la extrae y traduce
 subtrans auto pelicula.mkv
 
-# Vídeo sin subtítulos de texto: transcribe y traduce desde el audio
+# Vídeo sin subtítulos de texto: transcribe y traduce desde el audio (solo Gemini)
 subtrans auto video_sin_subs.mp4 --from-audio --audio-lang eng
 
 # Procesar una carpeta completa de episodios (omite los ya traducidos)
@@ -175,13 +210,14 @@ subtrans gui
 - **Arrastra y suelta** cualquier archivo `.mkv`, `.mp4` o `.srt`.
 - Selecciona pistas de audio y subtítulos mediante menús desplegables.
 - Elige entre los modos: **Automático**, **Solo extraer** o **Desde audio** (o **Traducir SRT directo** al soltar un `.srt`).
+- Elige el **motor de traducción** en *Ajustes*: **Gemini (nube)** o **Local (Ollama)**. Se preselecciona el de `config.toml` y el motor local se arranca solo al traducir.
 - Monitorea el progreso con la barra porcentual y el visor de registros.
 
 ---
 
 ## 🧪 Ejecución de Tests
 
-La suite incluye tests unitarios y de integración con clientes simulados (*mocks*) sin consumir cuota real de Gemini ni requerir pantalla:
+La suite incluye tests unitarios y de integración con clientes simulados (*mocks*) sin consumir cuota real de Gemini, sin Ollama arrancado ni requerir pantalla:
 
 ```bash
 pytest
@@ -197,7 +233,7 @@ srt-converter/
 ├── config.py            # Carga y validación de configuración TOML / variables de entorno
 ├── config.example.toml  # Plantilla de configuración de ejemplo
 ├── extractor.py         # Integración con ffprobe y ffmpeg (listado y extracción de pistas)
-├── translator.py        # Motor de traducción con Gemini (ventanas, reintentos, Files API)
+├── translator.py        # Motor de traducción: Gemini u Ollama (ventanas, reintentos, Files API)
 ├── srt_utils.py         # Parser, serializador y auditoría de subtítulos SRT
 ├── cache.py             # Sistema de persistencia y reanudación de ventanas
 ├── gui.py               # Interfaz gráfica con PySide6 y QThread

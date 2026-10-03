@@ -1,14 +1,21 @@
-"""Traducción de subtítulos con Gemini (librería oficial ``google-genai``).
+"""Traducción de subtítulos con Gemini (``google-genai``) u Ollama (local).
+
+Backends: :class:`GeminiSubtitler` (API de Google) y :class:`OllamaSubtitler`
+(modelo local vía la API HTTP de Ollama, solo texto). Ambos heredan de
+:class:`BaseSubtitler`, que contiene el protocolo de ventanas, el parser 1:1,
+los reintentos y el fallback; cada backend solo implementa
+:meth:`BaseSubtitler._call_model`.
 
 Dos flujos:
 
-- **Con SRT ya extraído**: :meth:`GeminiSubtitler.translate_srt_text`
+- **Con SRT ya extraído**: :meth:`BaseSubtitler.translate_srt_text`
   traduce los textos por ventanas (defecto 50 bloques) preservando
   timestamps vía ``srt_utils.replace_contents``.
 - **Sin SRT** (solo audio del MKV): :meth:`GeminiSubtitler.transcribe_and_translate_audio`
   sube el MP3 con la Files API (``client.files.upload``), pide a Gemini
   transcripción + traducción directa a SRT, parsea el resultado y borra el
-  archivo remoto en ``finally`` (``client.files.delete``).
+  archivo remoto en ``finally`` (``client.files.delete``). Ollama no lo
+  admite.
 
 Protocolo de ventanas: cada bloque se envía numerado como ``[#índice] texto``;
 el modelo debe devolver exactamente una sección por bloque con el mismo
@@ -16,7 +23,7 @@ marcador, lo que permite un mapeo 1:1 robusto incluso con saltos de línea
 internos. Cualquier descuadre cuenta como error (no se inventan timestamps).
 
 Reanudación: :func:`translate_file` persiste cada ventana traducida en
-``TranslationCache`` (``cache.py``) y solo reenvía a Gemini los chunks
+``TranslationCache`` (``cache.py``) y solo reenvía al modelo los chunks
 pendientes; al completar, limpia la caché.
 
 Resiliencia (Sprint 4):
@@ -33,12 +40,18 @@ Resiliencia (Sprint 4):
 
 from __future__ import annotations
 
+import atexit
+import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 import srt
 
 from cache import TranslationCache
@@ -48,10 +61,13 @@ from srt_utils import (
     parse_srt_content,
     read_srt_file,
     replace_contents,
+    wrap_lines,
     write_srt_file,
 )
 
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b"
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_WINDOW_SIZE = 50
 
 #: Reintentos ante errores transitorios de la API.
@@ -60,10 +76,17 @@ MAX_RETRIES = 3
 RETRY_DELAYS = (2.0, 4.0, 8.0)
 
 _NUMBERED_BLOCK_RE = re.compile(r"\[#(\d+)\]")
+#: Separador de líneas con el que el prompt codifica los saltos internos
+#: (``"línea 1 / línea 2"``). Los modelos suelen copiarlo tal cual en vez
+#: de usar saltos reales, o lo combinan con un salto real (``"tú /⏎sabes"``),
+#: así que se decodifica al parsear en todas sus variantes.
+_LINE_SEPARATOR_RE = re.compile(
+    r"[ \t]*/[ \t]*\n[ \t]*|[ \t]*\n[ \t]*/[ \t]*|[ \t]+/[ \t]+"
+)
 
 
 class TranslationMismatchError(RuntimeError):
-    """La respuesta de Gemini no mapea 1:1 con la ventana enviada.
+    """La respuesta del modelo no mapea 1:1 con la ventana enviada.
 
     Subclase de ``RuntimeError`` para compatibilidad con código que
     captura el error genérico.
@@ -136,28 +159,30 @@ def _format_glossary(glossary: dict[str, str] | None) -> str:
     return "\n".join(f'- "{src}" siempre como "{dst}"' for src, dst in glossary.items())
 
 
-class GeminiSubtitler:
-    """Traductor de subtítulos basado en la API de Gemini."""
+class BaseSubtitler:
+    """Lógica común de traducción por ventanas, independiente del backend.
+
+    Las subclases implementan :meth:`_call_model`; todo lo demás (prompt,
+    parser 1:1, reintentos ante errores transitorios y fallback ante
+    descuadres) se comparte.
+    """
+
+    #: Nombre legible del backend para mensajes de error.
+    backend_name = "modelo"
 
     def __init__(
         self,
-        api_key: str,
-        model: str = DEFAULT_GEMINI_MODEL,
-        client: Any | None = None,
+        model: str,
         glossary: dict[str, str] | None = None,
         src_lang: str = "en",
         dst_lang: str = "es",
         window_size: int = DEFAULT_WINDOW_SIZE,
         style_instructions: str = "",
     ) -> None:
-        """Crea el traductor.
+        """Guarda la configuración común.
 
         Args:
-            api_key: Clave de Gemini (obligatoria salvo que se inyecte
-                ``client`` ya construido, p. ej. en tests).
             model: Modelo generativo a usar.
-            client: Cliente ``genai.Client`` ya construido (inyección para
-                tests). Si es ``None``, se crea con ``api_key``.
             glossary: Nombres/términos con traducción fijada.
             src_lang: Idioma origen (nombre o código).
             dst_lang: Idioma destino.
@@ -165,17 +190,8 @@ class GeminiSubtitler:
             style_instructions: Directrices de tono/estilo (p. ej.
                 ``[translation].style`` del TOML). Se inyectan en todos
                 los prompts, incluidas las subventanas del fallback.
-
-        Raises:
-            ValueError: Si no hay ``api_key`` ni ``client``.
-            ImportError: Si ``google-genai`` no está instalado y hay que
-                crear el cliente interno.
         """
-        if client is None and not api_key:
-            raise ValueError("Falta api_key de Gemini (o inyecta un client).")
-        self.api_key = api_key
         self.model = model
-        self.client = client if client is not None else self._build_client(api_key)
         self.glossary: dict[str, str] = dict(glossary or {})
         self.src_lang = src_lang
         self.dst_lang = dst_lang
@@ -184,38 +200,29 @@ class GeminiSubtitler:
         self.fallback_notices: list[str] = []
         """Avisos de líneas conservadas en original tras agotar el fallback."""
 
-    @staticmethod
-    def _build_client(api_key: str) -> Any:
-        """Construye el cliente oficial ``genai.Client``.
+    def _call_model(self, contents: Any, temperature: float | None) -> str:
+        """Hace una única llamada al backend y devuelve el texto crudo.
 
         Args:
-            api_key: Clave de Gemini.
+            contents: Prompt (str) u otro contenido que el backend acepte.
+            temperature: Temperatura explícita o ``None`` (defecto del
+                backend).
 
         Returns:
-            Cliente construido.
-
-        Raises:
-            ImportError: Si ``google-genai`` no está instalado.
+            Texto generado (puede venir vacío).
         """
-        try:
-            from google import genai
-        except ImportError as exc:
-            raise ImportError(
-                "Falta la dependencia 'google-genai'. "
-                "Instálala con: pip install google-genai"
-            ) from exc
-        return genai.Client(api_key=api_key)
+        raise NotImplementedError
 
     def _generate_text(self, contents: Any, temperature: float | None = None) -> str:
-        """Llama a ``models.generate_content`` con reintentos y devuelve el texto.
+        """Llama a :meth:`_call_model` con reintentos y devuelve el texto.
 
         Ante errores transitorios (rate limit 429, 5xx, timeouts) reintenta
         hasta :data:`MAX_RETRIES` veces con esperas :data:`RETRY_DELAYS`.
 
         Args:
             contents: Prompt (str) o lista ``[audio_file, prompt]``.
-            temperature: Si se indica, se envía como ``config`` del modelo
-                (p. ej. ``0.0`` en el reintento estricto).
+            temperature: Si se indica, se envía al modelo (p. ej. ``0.0``
+                en el reintento estricto).
 
         Returns:
             Texto generado (sin espacios extremos).
@@ -225,24 +232,19 @@ class GeminiSubtitler:
             Exception: El último error transitorio tras agotar reintentos,
                 o cualquier error no transitorio de inmediato.
         """
-        kwargs: dict[str, Any] = {}
-        if temperature is not None:
-            kwargs["config"] = {"temperature": temperature}
         attempt = 0
         while True:
             try:
-                response = self.client.models.generate_content(
-                    model=self.model, contents=contents, **kwargs
-                )
+                text = self._call_model(contents, temperature)
             except Exception as exc:  # noqa: BLE001 — clasificar transitorio o no
                 if _is_transient_error(exc) and attempt < MAX_RETRIES:
                     time.sleep(RETRY_DELAYS[attempt])
                     attempt += 1
                     continue
                 raise
-            text = (getattr(response, "text", "") or "").strip()
+            text = (text or "").strip()
             if not text:
-                raise RuntimeError("Gemini devolvió una respuesta vacía.")
+                raise RuntimeError(f"{self.backend_name} devolvió una respuesta vacía.")
             return text
 
     def _build_translation_prompt(
@@ -287,7 +289,9 @@ class GeminiSubtitler:
         """Mapea la respuesta numerada a textos en orden de ventana.
 
         Acepta contenido multilínea por bloque: todo lo que haya entre un
-        marcador ``[#n]`` y el siguiente pertenece a ese bloque.
+        marcador ``[#n]`` y el siguiente pertenece a ese bloque. El
+        separador ``" / "`` del prompt se convierte de vuelta en salto de
+        línea real.
 
         Args:
             text: Respuesta cruda del modelo.
@@ -304,7 +308,7 @@ class GeminiSubtitler:
         found = [int(m.group(1)) for m in matches]
         if found != list(expected_indices):
             raise TranslationMismatchError(
-                f"Respuesta de Gemini descuadrada: se esperaban bloques "
+                f"Respuesta de {self.backend_name} descuadrada: se esperaban bloques "
                 f"{list(expected_indices)} y llegaron {found}. "
                 f"Fragmento: {text[:500]!r}"
             )
@@ -312,10 +316,11 @@ class GeminiSubtitler:
         for i, match in enumerate(matches):
             start = match.end()
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-            translations.append(text[start:end].strip())
+            translations.append(_LINE_SEPARATOR_RE.sub("\n", text[start:end].strip()))
         if any(not t for t in translations):
             raise TranslationMismatchError(
-                f"Gemini devolvió algún bloque vacío. Fragmento: {text[:500]!r}"
+                f"{self.backend_name} devolvió algún bloque vacío. "
+                f"Fragmento: {text[:500]!r}"
             )
         return translations
 
@@ -430,6 +435,95 @@ class GeminiSubtitler:
             self.fallback_notices.extend(notices)
         return translated
 
+
+class GeminiSubtitler(BaseSubtitler):
+    """Traductor de subtítulos basado en la API de Gemini."""
+
+    backend_name = "Gemini"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_GEMINI_MODEL,
+        client: Any | None = None,
+        glossary: dict[str, str] | None = None,
+        src_lang: str = "en",
+        dst_lang: str = "es",
+        window_size: int = DEFAULT_WINDOW_SIZE,
+        style_instructions: str = "",
+    ) -> None:
+        """Crea el traductor.
+
+        Args:
+            api_key: Clave de Gemini (obligatoria salvo que se inyecte
+                ``client`` ya construido, p. ej. en tests).
+            model: Modelo generativo a usar.
+            client: Cliente ``genai.Client`` ya construido (inyección para
+                tests). Si es ``None``, se crea con ``api_key``.
+            glossary: Nombres/términos con traducción fijada.
+            src_lang: Idioma origen (nombre o código).
+            dst_lang: Idioma destino.
+            window_size: Bloques por llamada (defecto 50).
+            style_instructions: Directrices de tono/estilo.
+
+        Raises:
+            ValueError: Si no hay ``api_key`` ni ``client``.
+            ImportError: Si ``google-genai`` no está instalado y hay que
+                crear el cliente interno.
+        """
+        if client is None and not api_key:
+            raise ValueError("Falta api_key de Gemini (o inyecta un client).")
+        super().__init__(
+            model=model,
+            glossary=glossary,
+            src_lang=src_lang,
+            dst_lang=dst_lang,
+            window_size=window_size,
+            style_instructions=style_instructions,
+        )
+        self.api_key = api_key
+        self.client = client if client is not None else self._build_client(api_key)
+
+    @staticmethod
+    def _build_client(api_key: str) -> Any:
+        """Construye el cliente oficial ``genai.Client``.
+
+        Args:
+            api_key: Clave de Gemini.
+
+        Returns:
+            Cliente construido.
+
+        Raises:
+            ImportError: Si ``google-genai`` no está instalado.
+        """
+        try:
+            from google import genai
+        except ImportError as exc:
+            raise ImportError(
+                "Falta la dependencia 'google-genai'. "
+                "Instálala con: pip install google-genai"
+            ) from exc
+        return genai.Client(api_key=api_key)
+
+    def _call_model(self, contents: Any, temperature: float | None) -> str:
+        """Llama a ``models.generate_content`` una vez.
+
+        Args:
+            contents: Prompt (str) o lista ``[audio_file, prompt]``.
+            temperature: Si se indica, se envía como ``config``.
+
+        Returns:
+            Texto de la respuesta (``""`` si viene vacía).
+        """
+        kwargs: dict[str, Any] = {}
+        if temperature is not None:
+            kwargs["config"] = {"temperature": temperature}
+        response = self.client.models.generate_content(
+            model=self.model, contents=contents, **kwargs
+        )
+        return getattr(response, "text", "") or ""
+
     def _build_transcription_prompt(self) -> str:
         """Construye el prompt de transcripción+traducción desde audio.
 
@@ -497,8 +591,215 @@ class GeminiSubtitler:
         return subtitles
 
 
+class OllamaSubtitler(BaseSubtitler):
+    """Traductor de subtítulos con un modelo local servido por Ollama.
+
+    Usa ``POST /api/chat`` sin streaming y con ``think`` desactivado. Solo
+    traduce texto: la transcripción desde audio no está disponible.
+
+    Si el servidor es local y no responde, :meth:`start_server` lanza
+    ``ollama serve`` como proceso hijo; :meth:`close` (o la salida del
+    programa, vía ``atexit``) lo detiene y libera la VRAM. Un servidor que
+    ya estuviera arrancado (p. ej. el servicio de systemd) nunca se toca.
+    """
+
+    backend_name = "Ollama"
+
+    def __init__(
+        self,
+        model: str = DEFAULT_OLLAMA_MODEL,
+        host: str = DEFAULT_OLLAMA_HOST,
+        *,
+        num_ctx: int = 8192,
+        temperature: float = 0.3,
+        timeout: float = 600.0,
+        http: Any | None = None,
+        glossary: dict[str, str] | None = None,
+        src_lang: str = "en",
+        dst_lang: str = "es",
+        window_size: int = DEFAULT_WINDOW_SIZE,
+        style_instructions: str = "",
+    ) -> None:
+        """Crea el traductor local.
+
+        Args:
+            model: Etiqueta del modelo en Ollama (p. ej. ``gemma4:26b-a4b``).
+            host: URL base del servidor Ollama.
+            num_ctx: Ventana de contexto en tokens (el defecto de Ollama,
+                4096, se queda corto con ventanas de 50 bloques).
+            temperature: Temperatura por defecto; el reintento estricto
+                la sobrescribe con ``0.0``.
+            timeout: Segundos máximos por llamada (el modelo local puede
+                tardar más de un minuto por ventana).
+            http: Cliente HTTP con ``post(path, json=...)`` ya construido
+                (inyección para tests). Si es ``None``, se crea
+                ``httpx.Client`` con ``host`` y ``timeout``.
+            glossary: Nombres/términos con traducción fijada.
+            src_lang: Idioma origen.
+            dst_lang: Idioma destino.
+            window_size: Bloques por llamada.
+            style_instructions: Directrices de tono/estilo.
+        """
+        super().__init__(
+            model=model,
+            glossary=glossary,
+            src_lang=src_lang,
+            dst_lang=dst_lang,
+            window_size=window_size,
+            style_instructions=style_instructions,
+        )
+        self.host = host
+        self.num_ctx = num_ctx
+        self.temperature = temperature
+        self.http = http if http is not None else httpx.Client(base_url=host, timeout=timeout)
+        self._server: subprocess.Popen | None = None
+        """Proceso ``ollama serve`` lanzado por nosotros (``None`` si no)."""
+
+    def server_running(self) -> bool:
+        """Indica si el servidor Ollama responde en :attr:`host`.
+
+        Returns:
+            ``True`` si ``GET /api/version`` contesta 200.
+        """
+        try:
+            return self.http.get("/api/version", timeout=2.0).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    def is_local(self) -> bool:
+        """Indica si :attr:`host` apunta a esta máquina.
+
+        Returns:
+            ``True`` para ``localhost``, ``127.0.0.1`` o ``::1``.
+        """
+        return urlparse(self.host).hostname in {"localhost", "127.0.0.1", "::1"}
+
+    def start_server(self, wait_seconds: float = 60.0) -> None:
+        """Lanza ``ollama serve`` y espera a que responda.
+
+        Args:
+            wait_seconds: Tiempo máximo de espera hasta que responda.
+
+        Raises:
+            ConnectionError: Si el host no es local (no se puede arrancar).
+            FileNotFoundError: Si el ejecutable ``ollama`` no está instalado.
+            RuntimeError: Si el proceso termina antes de estar listo.
+            TimeoutError: Si no responde en ``wait_seconds``.
+        """
+        if not self.is_local():
+            raise ConnectionError(
+                f"Ollama no responde en {self.host} y, al no ser local, "
+                "no se puede arrancar automáticamente."
+            )
+        exe = shutil.which("ollama")
+        if exe is None:
+            raise FileNotFoundError(
+                "No se encontró el programa 'ollama'. Instálalo "
+                "(Arch: sudo pacman -S ollama-cuda) o usa backend = \"gemini\"."
+            )
+        parsed = urlparse(self.host)
+        env = dict(os.environ, OLLAMA_HOST=f"{parsed.hostname}:{parsed.port or 11434}")
+        self._server = subprocess.Popen(
+            [exe, "serve"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # Ctrl+C lo gestionamos nosotros (close)
+        )
+        atexit.register(self.close)
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if self._server.poll() is not None:
+                self._server = None
+                raise RuntimeError(
+                    "'ollama serve' terminó al arrancar (¿puerto ocupado o "
+                    "instalación rota?). Prueba a ejecutarlo a mano para ver el error."
+                )
+            if self.server_running():
+                return
+            time.sleep(0.5)
+        self.close()
+        raise TimeoutError(f"Ollama no respondió en {wait_seconds:.0f} s.")
+
+    def ensure_server(self) -> bool:
+        """Arranca el servidor si no responde.
+
+        Returns:
+            ``True`` si lo ha arrancado ahora; ``False`` si ya funcionaba.
+        """
+        if self.server_running():
+            return False
+        self.start_server()
+        return True
+
+    def close(self) -> None:
+        """Detiene el ``ollama serve`` lanzado por nosotros (si lo hay)."""
+        server, self._server = self._server, None
+        if server is None or server.poll() is not None:
+            return
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
+
+    def _call_model(self, contents: Any, temperature: float | None) -> str:
+        """Llama a ``/api/chat`` una vez.
+
+        Args:
+            contents: Prompt de texto.
+            temperature: Temperatura explícita o ``None`` para usar
+                :attr:`temperature`.
+
+        Returns:
+            Contenido del mensaje del asistente.
+
+        Raises:
+            ConnectionError: Si el servidor Ollama no responde.
+            ValueError: Si el modelo no está descargado.
+            httpx.HTTPStatusError: Ante otros errores HTTP (los 5xx se
+                reintentan en :meth:`_generate_text`).
+        """
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": contents}],
+            "stream": False,
+            "think": False,
+            "options": {
+                "temperature": self.temperature if temperature is None else temperature,
+                "num_ctx": self.num_ctx,
+            },
+        }
+        try:
+            response = self.http.post("/api/chat", json=payload)
+        except httpx.ConnectError as exc:
+            raise ConnectionError(
+                f"No se pudo conectar con Ollama en {self.host}. ¿Está arrancado? "
+                "Prueba 'ollama serve' o 'sudo systemctl start ollama'."
+            ) from exc
+        if response.status_code == 404:
+            raise ValueError(
+                f"Ollama no tiene el modelo '{self.model}'. "
+                f"Descárgalo con: ollama pull {self.model}"
+            )
+        response.raise_for_status()
+        return response.json().get("message", {}).get("content", "")
+
+    def transcribe_and_translate_audio(self, *args: Any, **kwargs: Any) -> list[srt.Subtitle]:
+        """No disponible en local.
+
+        Raises:
+            NotImplementedError: Siempre.
+        """
+        raise NotImplementedError(
+            "El backend 'ollama' no transcribe audio; usa backend = \"gemini\" "
+            "para --from-audio."
+        )
+
+
 def _translate_one_window(
-    subtitler: GeminiSubtitler, window: list[srt.Subtitle]
+    subtitler: BaseSubtitler, window: list[srt.Subtitle]
 ) -> tuple[list[srt.Subtitle], list[str]]:
     """Traduce una ventana usando el camino resiliente si existe.
 
@@ -520,7 +821,7 @@ def _translate_one_window(
 def translate_file(
     srt_path: str | Path,
     output: str | Path | None,
-    subtitler: GeminiSubtitler,
+    subtitler: BaseSubtitler,
     max_chars: int = 42,
     max_cps: float = 17.0,
     use_cache: bool = True,
@@ -532,7 +833,7 @@ def translate_file(
     ``<stem>_es.srt``; si coincide con la entrada se rechaza.
 
     La caché (``<stem>.subtrans-cache.json`` junto al origen) guarda cada
-    ventana traducida a medida que llega de Gemini; si el proceso se
+    ventana traducida a medida que llega del modelo; si el proceso se
     interrumpe, la siguiente ejecución solo reenvía los chunks pendientes.
     Tras escribir el destino con éxito y con todos los chunks completos,
     la caché se limpia.
@@ -543,8 +844,9 @@ def translate_file(
     Args:
         srt_path: SRT origen.
         output: Destino explícito o ``None`` para derivarlo.
-        subtitler: Instancia configurada de :class:`GeminiSubtitler`.
-        max_chars: Límite para la auditoría de longitud.
+        subtitler: Instancia configurada de :class:`BaseSubtitler`.
+        max_chars: Límite por línea: reparte las líneas largas en dos
+            (:func:`srt_utils.wrap_lines`) y audita la longitud.
         max_cps: Límite para la auditoría de velocidad.
         use_cache: Si ``False``, traduce todo sin leer ni escribir caché
             (útil para tests o para forzar una pasada limpia).
@@ -612,6 +914,9 @@ def translate_file(
             n for n in notices if n not in subtitler.fallback_notices
         )
     translated = [sub for window in translated_windows for sub in window]
+    translated = replace_contents(
+        translated, [wrap_lines(sub.content, max_chars) for sub in translated]
+    )
     warnings = audit_subtitles(translated, max_chars=max_chars, max_cps=max_cps)
     write_srt_file(dst, translated)
     if cache is not None and cache.is_complete(len(windows)):
