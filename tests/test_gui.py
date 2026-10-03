@@ -382,6 +382,38 @@ class TestWorkerFromAudioSuccess:
         assert str(tmp_path / "test_es.srt") in completed_mock.emit.call_args[0][0]
 
 
+    def test_from_audio_prefers_src_lang_track(self, tmp_path: Path) -> None:
+        """Sin pista ni idioma de audio, se busca el audio en el idioma origen."""
+        from extractor import AudioTrack
+
+        source = tmp_path / "test.mkv"
+        source.write_text("fake")
+        worker = Worker(source, "from_audio", src_lang="fr")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        tracks = [
+            AudioTrack(index=1, audio_index=0, lang="eng", title="", codec="aac",
+                       channels=2, is_default=True),
+            AudioTrack(index=2, audio_index=1, lang="fre", title="", codec="aac",
+                       channels=2),
+        ]
+        mock_subtitler = MagicMock()
+        mock_subtitler.transcribe_and_translate_audio.return_value = []
+        mock_subtitler.fallback_notices = []
+
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.list_audio_tracks", return_value=tracks),
+            patch("gui.extract_audio") as mock_extract,
+            patch("gui.GeminiSubtitler", return_value=mock_subtitler),
+            patch("gui.write_srt_file"),
+        ):
+            worker.run()
+
+        assert mock_extract.call_args.kwargs["track"].lang == "fre"
+
+
 class TestWorkerAutoSuccess:
     """Tests del Worker en modo auto con mocks."""
 

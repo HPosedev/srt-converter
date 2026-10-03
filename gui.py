@@ -94,7 +94,7 @@ class Worker(QThread):
         *,
         subtitle_track_index: int | None = None,
         audio_track_index: int | None = None,
-        audio_lang: str = "eng",
+        audio_lang: str | None = None,
         src_lang: str | None = None,
         dst_lang: str = "es",
         window_size: int = 50,
@@ -109,6 +109,7 @@ class Worker(QThread):
         self.subtitle_track_index = subtitle_track_index
         self.audio_track_index = audio_track_index
         self.audio_lang = audio_lang
+        """Idioma de audio preferido; ``None`` usa el idioma origen."""
         self.src_lang = src_lang
         """Idioma origen elegido en la GUI; ``None`` usa ``[translation].source``."""
         self.dst_lang = dst_lang
@@ -276,7 +277,9 @@ class Worker(QThread):
 
         try:
             chosen_audio = select_audio_track(
-                audio_tracks, track_index=self.audio_track_index, lang=self.audio_lang
+                audio_tracks,
+                track_index=self.audio_track_index,
+                lang=self.audio_lang or self.src_lang or cfg.src_lang,
             )
         except ValueError as exc:
             if self.audio_track_index is None and len(audio_tracks) == 1:
@@ -480,6 +483,7 @@ class MainWindow(QMainWindow):
         self._src_lang.setToolTip(
             "Idioma de los subtítulos o del audio de partida (p. ej. en, fr, francés)."
         )
+        self._src_lang.editingFinished.connect(self._preselect_audio_track)
         src_row.addWidget(self._src_lang)
         src_row.addStretch()
         settings_layout.addLayout(src_row)
@@ -692,6 +696,7 @@ class MainWindow(QMainWindow):
         if self._audio_tracks:
             for t in self._audio_tracks:
                 self._audio_combo.addItem(t.describe(), t.audio_index)
+            self._preselect_audio_track()
         else:
             self._audio_combo.addItem("(sin pistas de audio)")
 
@@ -709,6 +714,19 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self._audio_tracks):
             track = self._audio_tracks[index]
             self._log(f"Audio seleccionado: {track.describe()}")
+
+    @Slot()
+    def _preselect_audio_track(self) -> None:
+        """Selecciona la pista de audio en el idioma origen, si la hay."""
+        lang = self._src_lang.text().strip()
+        if not lang or not self._audio_tracks:
+            return
+        try:
+            track = select_audio_track(self._audio_tracks, lang=lang)
+        except ValueError:
+            self._log(f"Ninguna pista de audio en '{lang}'; elige una a mano.")
+            return
+        self._audio_combo.setCurrentIndex(self._audio_tracks.index(track))
 
     @staticmethod
     def _initial_backend() -> str:
@@ -785,7 +803,6 @@ class MainWindow(QMainWindow):
             mode,
             subtitle_track_index=subtitle_idx,
             audio_track_index=audio_idx,
-            audio_lang="eng",
             src_lang=self._src_lang.text().strip() or None,
             dst_lang=self._dst_lang.text() or "es",
             window_size=self._window_size.value(),
