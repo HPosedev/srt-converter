@@ -90,6 +90,7 @@ class TestWorkerInit:
         assert worker.mode == "auto"
         assert worker.subtitle_track_index is None
         assert worker.audio_track_index is None
+        assert worker.src_lang is None
         assert worker.dst_lang == "es"
         assert worker.window_size == 50
         assert worker.use_cache is True
@@ -260,6 +261,42 @@ class TestWorkerRun:
             worker.run()
         mock_ollama.assert_called_once()
         mock_gemini.assert_not_called()
+
+    def test_worker_src_lang_overrides_config(self, tmp_path: Path) -> None:
+        """El idioma origen elegido en la GUI prevalece sobre [translation].source."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", src_lang="fr", backend="gemini")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        with (
+            patch("gui.load_config", return_value=_fake_config()),
+            patch("gui.GeminiSubtitler") as mock_gemini,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_gemini.return_value.fallback_notices = []
+            worker.run()
+        assert mock_gemini.call_args.kwargs["src_lang"] == "fr"
+
+    def test_worker_without_src_lang_uses_config(self, tmp_path: Path) -> None:
+        """Sin idioma origen en la GUI se usa el de config.toml."""
+        source = tmp_path / "test.srt"
+        source.write_text("fake")
+        worker = Worker(source, "translate", backend="gemini")
+        worker.completed = MagicMock()
+        worker.text_log = MagicMock()
+        worker.progress = MagicMock()
+        cfg = _fake_config()
+        cfg.src_lang = "de"
+        with (
+            patch("gui.load_config", return_value=cfg),
+            patch("gui.GeminiSubtitler") as mock_gemini,
+            patch("gui.translate_file", return_value=(tmp_path / "test_es.srt", [])),
+        ):
+            mock_gemini.return_value.fallback_notices = []
+            worker.run()
+        assert mock_gemini.call_args.kwargs["src_lang"] == "de"
 
     def test_worker_gemini_choice_ignores_ollama_config(self, tmp_path: Path) -> None:
         """Elegir Gemini en la GUI no arranca Ollama aunque el TOML diga ollama."""

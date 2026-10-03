@@ -95,6 +95,7 @@ class Worker(QThread):
         subtitle_track_index: int | None = None,
         audio_track_index: int | None = None,
         audio_lang: str = "eng",
+        src_lang: str | None = None,
         dst_lang: str = "es",
         window_size: int = 50,
         use_cache: bool = True,
@@ -108,6 +109,8 @@ class Worker(QThread):
         self.subtitle_track_index = subtitle_track_index
         self.audio_track_index = audio_track_index
         self.audio_lang = audio_lang
+        self.src_lang = src_lang
+        """Idioma origen elegido en la GUI; ``None`` usa ``[translation].source``."""
         self.dst_lang = dst_lang
         self.window_size = window_size
         self.use_cache = use_cache
@@ -322,7 +325,7 @@ class Worker(QThread):
                 num_ctx=cfg.ollama.num_ctx,
                 temperature=cfg.ollama.temperature,
                 glossary=cfg.glossary,
-                src_lang=cfg.src_lang,
+                src_lang=self.src_lang or cfg.src_lang,
                 dst_lang=self.dst_lang or cfg.dst_lang,
                 window_size=self.window_size or cfg.window_size,
                 style_instructions=cfg.style_instructions,
@@ -342,7 +345,7 @@ class Worker(QThread):
             api_key=cfg.gemini.api_key,
             model=cfg.gemini.model,
             glossary=cfg.glossary,
-            src_lang=cfg.src_lang,
+            src_lang=self.src_lang or cfg.src_lang,
             dst_lang=self.dst_lang or cfg.dst_lang,
             window_size=self.window_size or cfg.window_size,
             style_instructions=cfg.style_instructions,
@@ -467,6 +470,19 @@ class MainWindow(QMainWindow):
         self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         backend_row.addWidget(self._backend_combo, 1)
         settings_layout.addLayout(backend_row)
+
+        src_row = QHBoxLayout()
+        src_lbl = QLabel("Idioma origen:")
+        src_lbl.setFixedWidth(130)
+        src_row.addWidget(src_lbl)
+        self._src_lang = QLineEdit(self._initial_src_lang())
+        self._src_lang.setMaximumWidth(80)
+        self._src_lang.setToolTip(
+            "Idioma de los subtítulos o del audio de partida (p. ej. en, fr, francés)."
+        )
+        src_row.addWidget(self._src_lang)
+        src_row.addStretch()
+        settings_layout.addLayout(src_row)
 
         lang_row = QHBoxLayout()
         lang_lbl = QLabel("Idioma destino:")
@@ -702,6 +718,14 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError):
             return "gemini"
 
+    @staticmethod
+    def _initial_src_lang() -> str:
+        """Idioma origen de ``config.toml`` para rellenar el campo."""
+        try:
+            return load_config().src_lang
+        except (OSError, ValueError):
+            return "en"
+
     @Slot(int)
     def _on_backend_changed(self, index: int) -> None:
         if self._backend_combo.currentData() == "ollama":
@@ -762,6 +786,7 @@ class MainWindow(QMainWindow):
             subtitle_track_index=subtitle_idx,
             audio_track_index=audio_idx,
             audio_lang="eng",
+            src_lang=self._src_lang.text().strip() or None,
             dst_lang=self._dst_lang.text() or "es",
             window_size=self._window_size.value(),
             use_cache=self._keep_cache.isChecked(),
